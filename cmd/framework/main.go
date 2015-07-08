@@ -12,7 +12,7 @@ import (
 
 var (
 	master = flag.String("master", "localhost:5050", "Mesos master to register with")
-	listen = flag.String("listen", "localhost:8080", "API listen address")
+	listen = flag.String("listen", ":8080", "API listen address")
 	queue  = flag.String("queue", nats.DefaultURL, "Task Queue URL")
 	user   = flag.String("user", "", "User to execute tasks as")
 )

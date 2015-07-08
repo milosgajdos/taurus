@@ -45,6 +45,7 @@ taurus:
         - "mesosslave:slave"
         - "gnatsd:queue"
     environment:
+        - MESOS_MASTER=master:5050
         - TASK_QUEUE=nats://queue:4222
     volumes:
         - /var/lib:/tmp
