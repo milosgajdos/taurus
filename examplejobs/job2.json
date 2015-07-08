@@ -1,0 +1,16 @@
+{
+        "id" : "taurusjob2",
+        "task" : {
+                "cluster" : "MyCluster",
+                "environment" : "prod",
+                "role" : "web",
+                "container" : {
+                        "image" : "nginx"
+                },
+                "resources" : {
+                        "cpu" : 2.0,
+                        "memory" : 128
+                },
+                "replicas" : 4
+        }
+}

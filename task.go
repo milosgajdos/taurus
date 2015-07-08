@@ -10,11 +10,11 @@ import (
 	util "github.com/mesos/mesos-go/mesosutil"
 )
 
-type JobState int
+type State int
 
 const (
 	// Taurus Job state
-	Pending JobState = iota + 1
+	Pending State = iota + 1
 	Scheduling
 	Running
 	Doomed
@@ -26,7 +26,7 @@ const (
 	DEFAULT_MEM_PER_TASK  = 128
 )
 
-func (s JobState) String() string {
+func (s State) String() string {
 	switch s {
 	case Pending:
 		return "Pending"
@@ -89,7 +89,7 @@ type JobTask struct {
 type Job struct {
 	Id    string   `json:"id"`
 	Task  *JobTask `json:"task"`
-	State JobState `json:"state"`
+	State State    `json:"job_state"`
 }
 
 // Task is an instance of JobTask

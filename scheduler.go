@@ -28,8 +28,8 @@ type Scheduler struct {
 	Pending Subscription
 	Doomed  Subscription
 	master  string
-	wg      sync.WaitGroup
 	done    chan struct{}
+	wg      sync.WaitGroup
 }
 
 func NewScheduler(store Store, queue Queue, master string) (*Scheduler, error) {
@@ -105,8 +105,13 @@ func (sched *Scheduler) QPendingTasks() error {
 						Info:  taskInfo,
 						JobId: job.Id,
 					}
+					if err := sched.Store.AddTask(task); err != nil {
+						log.Printf("Failed to store task %s: %s",
+							task.Info.TaskId.GetValue(), err)
+						continue
+					}
 					taskId := taskInfo.TaskId.GetValue()
-					log.Printf("Queueing task: %s", taskId)
+					log.Printf("Queueing task %s to %s queue", taskId, queue)
 					if err := sched.Queue.Publish(queue, task); err != nil {
 						log.Printf("Failed to queue %s: %s", taskId, err)
 						continue
@@ -148,7 +153,8 @@ func (sched *Scheduler) QDoomedTasks() error {
 			for _, job := range jobs {
 				ctx, cancel := context.WithTimeout(
 					context.Background(), QueryMasterTimeout*time.Second)
-				taskIds, err := TaskIds(ctx, sched.master, job.Id)
+				taskIds, err := TaskIds(ctx, sched.master, job.Id,
+					mesos.TaskState_TASK_RUNNING.Enum())
 				if err != nil {
 					log.Printf("Failed to retrieve TaskIds for Job %s: %s", job.Id, err)
 					cancel()
@@ -162,7 +168,7 @@ func (sched *Scheduler) QDoomedTasks() error {
 						Info:  taskInfo,
 						JobId: job.Id,
 					}
-					log.Printf("Queueing %s task: %s", taskId, state)
+					log.Printf("Queueing task %s to %s queue", taskId, queue)
 					if err := sched.Queue.Publish(queue, task); err != nil {
 						log.Printf("Failed to queue %s: %s", taskId, err)
 						continue
@@ -296,12 +302,17 @@ ReadOffers:
 				log.Printf("Mesos status: %#v Failed to launch Tasks %s: %s", launchStatus, launchTasks, err)
 				continue ReadOffers
 			}
+			for _, task := range launchTasks {
+				taskId := task.TaskId.GetValue()
+				if err := sched.Store.RemoveTask(taskId); err != nil {
+					log.Printf("Failed to remove task %s: %s", taskId, err)
+				}
+			}
 		} else {
 			log.Println("Declining offer ", offer.Id.GetValue())
 			declineStatus, err := driver.DeclineOffer(offer.Id, &mesos.Filters{RefuseSeconds: proto.Float64(1)})
 			if err != nil {
 				log.Printf("Error declining offer for mesos status %#v: %s", declineStatus, err)
-				continue ReadOffers
 			}
 		}
 	}

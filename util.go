@@ -56,7 +56,7 @@ func MasterConnStr(masterInfo *mesos.MasterInfo) string {
 	return fmt.Sprintf("%s:%d", addr, port)
 }
 
-func TaskIds(ctx context.Context, master, jobId string) ([]string, error) {
+func TaskIds(ctx context.Context, master, jobId string, state *mesos.TaskState) ([]string, error) {
 	uri := fmt.Sprintf("http://%s/master/state.json", master)
 	req, err := http.NewRequest("GET", uri, nil)
 	if err != nil {
@@ -93,7 +93,11 @@ func TaskIds(ctx context.Context, master, jobId string) ([]string, error) {
 			}
 			for _, task := range fw.Tasks {
 				if ParseJobId(task.Id) == jobId {
-					if task.State == "TASK_RUNNING" {
+					if state != nil {
+						if task.State == state.String() {
+							taskIds = append(taskIds, task.Id)
+						}
+					} else {
 						taskIds = append(taskIds, task.Id)
 					}
 				}
