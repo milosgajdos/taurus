@@ -33,11 +33,11 @@ type Scheduler struct {
 }
 
 func NewScheduler(store Store, queue Queue, master string) (*Scheduler, error) {
-	pending, err := queue.SubscribeSync(Pending.String())
+	pending, err := queue.Subscribe(Pending.String())
 	if err != nil {
 		return nil, err
 	}
-	doomed, err := queue.SubscribeSync(Doomed.String())
+	doomed, err := queue.Subscribe(Doomed.String())
 	if err != nil {
 		return nil, err
 	}

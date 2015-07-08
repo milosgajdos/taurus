@@ -9,8 +9,7 @@ import (
 
 type Queue interface {
 	Publish(string, interface{}) error
-	SubscribeSync(string) (Subscription, error)
-	SubscribeAsync(string, nats.MsgHandler) (Subscription, error)
+	Subscribe(string) (Subscription, error)
 	Close()
 }
 
@@ -22,7 +21,6 @@ type Subscription interface {
 }
 
 type TaskQueue struct {
-	conn   *nats.Conn
 	enconn *nats.EncodedConn
 }
 
@@ -46,18 +44,8 @@ func (tq *TaskQueue) Publish(subject string, data interface{}) error {
 	return tq.enconn.Publish(subject, data)
 }
 
-func (tq *TaskQueue) SubscribeSync(subject string) (Subscription, error) {
+func (tq *TaskQueue) Subscribe(subject string) (Subscription, error) {
 	sub, err := tq.enconn.Conn.SubscribeSync(subject)
-	if err != nil {
-		return nil, err
-	}
-	return &TaskSubscription{
-		sub: sub,
-	}, nil
-}
-
-func (tq *TaskQueue) SubscribeAsync(subject string, handler nats.MsgHandler) (Subscription, error) {
-	sub, err := tq.enconn.Subscribe(subject, handler)
 	if err != nil {
 		return nil, err
 	}
