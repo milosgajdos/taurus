@@ -1,1 +1,4 @@
 build
+cmd/framework/framework
+cmd/executor/executor
+cmd/cli/cli
