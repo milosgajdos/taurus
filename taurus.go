@@ -91,7 +91,10 @@ func (t *Taurus) Run() error {
 	signal.Notify(sigc, os.Interrupt, os.Kill, syscall.SIGTERM)
 
 	// Start Taurus Scheduler driver
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
+		log.Printf("Starting %s scheduler driver", FrameworkName)
 		if st, err := t.driver.Run(); err != nil {
 			errChan <- fmt.Errorf("Taurus failed with status %s: %s", st.String(), err)
 		}
@@ -120,15 +123,15 @@ func (t *Taurus) Run() error {
 		log.Printf("Taurus failed with error: %s", err)
 	}
 
-	log.Printf("Shutting down %s API server", FrameworkName)
+	log.Printf("Stopping %s API server", FrameworkName)
 	t.api.listener.Close()
 	log.Printf("Stopping %s Scheduler", FrameworkName)
 	t.scheduler.Stop()
-	wg.Wait()
 	log.Printf("Stopping %s Scheduler driver", FrameworkName)
 	if _, err := t.driver.Stop(false); err != nil {
 		log.Printf("Stopping %s scheduler driver failed: %s", err, FrameworkName)
 	}
+	wg.Wait()
 
 	return err
 }

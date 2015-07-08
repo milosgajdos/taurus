@@ -82,6 +82,7 @@ func (sched *Scheduler) Run(driver *sched.MesosSchedulerDriver) error {
 
 func (sched *Scheduler) Stop() {
 	close(sched.done)
+	sched.Queue.Close()
 	sched.wg.Wait()
 	return
 }
@@ -121,7 +122,6 @@ func (sched *Scheduler) QPendingTasks() error {
 					errChan <- fmt.Errorf("Failed to update job %s: %s", job.Id, err)
 				}
 			}
-			log.Printf("New scan in %d seconds", StoreScanTick)
 		}
 	}()
 
@@ -192,22 +192,24 @@ func (sched *Scheduler) QDoomedTasks() error {
 }
 
 func (sched *Scheduler) KillTasks(master string, driver *sched.MesosSchedulerDriver) error {
-	errChan := make(chan error)
-	ticker := time.NewTicker(StoreScanTick * time.Second)
 	queue := Doomed.String()
-	var retryCount int
-	go func(retries int) {
+	errChan := make(chan error)
+	go func() {
 		for {
+			var retryCount int
 			task, err := sched.Doomed.NextTask(QueueTimeout * time.Second)
 			if err != nil {
-				if err == nats.ErrTimeout {
+				switch err {
+				case nats.ErrTimeout:
 					log.Printf("No tasks to kill")
-				} else {
-					retries += 1
-					log.Printf("Failed to read from %s queue", queue)
+				case nats.ErrConnectionClosed:
+					errChan <- nil
+				default:
+					retryCount += 1
+					log.Printf("Failed to read from %s queue: %s", queue, err)
 				}
-				if retries == QueueRetry {
-					errChan <- err
+				if retryCount == QueueRetry {
+					errChan <- fmt.Errorf("Error reading %s queue: %s", queue, err)
 				}
 				continue
 			}
@@ -217,12 +219,11 @@ func (sched *Scheduler) KillTasks(master string, driver *sched.MesosSchedulerDri
 					killStatus, task.Info.TaskId.GetValue(), err)
 			}
 		}
-	}(retryCount)
+	}()
 
 	select {
 	case <-sched.done:
 		log.Printf("Finished Task killer")
-		ticker.Stop()
 		return nil
 	case err := <-errChan:
 		return err
@@ -261,10 +262,13 @@ ReadOffers:
 			task, err := sched.Pending.NextTask(QueueTimeout * time.Second)
 			if err != nil {
 				retryCount += 1
-				if err == nats.ErrTimeout {
+				switch err {
+				case nats.ErrTimeout:
 					log.Printf("No pending tasks available")
-				} else {
-					log.Printf("Failed to read the pending task: %s", err)
+				case nats.ErrConnectionClosed:
+					break ReadTasks
+				default:
+					log.Printf("Failed to read from %s queue: %s", Pending, err)
 				}
 				if retryCount == QueueRetry {
 					break ReadTasks

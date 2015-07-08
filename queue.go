@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/nats-io/graft"
 	"github.com/nats-io/nats"
 )
 
@@ -12,7 +11,6 @@ type Queue interface {
 	Publish(string, interface{}) error
 	SubscribeSync(string) (Subscription, error)
 	SubscribeAsync(string, nats.MsgHandler) (Subscription, error)
-	RPCDriver() graft.RPCDriver
 	Close()
 }
 
@@ -26,7 +24,6 @@ type Subscription interface {
 type TaskQueue struct {
 	conn   *nats.Conn
 	enconn *nats.EncodedConn
-	rpc    graft.RPCDriver
 }
 
 func NewTaskQueue(options *nats.Options, encType string) (*TaskQueue, error) {
@@ -40,15 +37,8 @@ func NewTaskQueue(options *nats.Options, encType string) (*TaskQueue, error) {
 		return nil, err
 	}
 
-	rpc, err := graft.NewNatsRpc(options)
-	if err != nil {
-		return nil, err
-	}
-
 	return &TaskQueue{
-		conn:   conn,
 		enconn: enconn,
-		rpc:    rpc,
 	}, nil
 }
 
@@ -57,7 +47,7 @@ func (tq *TaskQueue) Publish(subject string, data interface{}) error {
 }
 
 func (tq *TaskQueue) SubscribeSync(subject string) (Subscription, error) {
-	sub, err := tq.conn.SubscribeSync(subject)
+	sub, err := tq.enconn.Conn.SubscribeSync(subject)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +57,7 @@ func (tq *TaskQueue) SubscribeSync(subject string) (Subscription, error) {
 }
 
 func (tq *TaskQueue) SubscribeAsync(subject string, handler nats.MsgHandler) (Subscription, error) {
-	sub, err := tq.conn.Subscribe(subject, handler)
+	sub, err := tq.enconn.Subscribe(subject, handler)
 	if err != nil {
 		return nil, err
 	}
@@ -76,21 +66,12 @@ func (tq *TaskQueue) SubscribeAsync(subject string, handler nats.MsgHandler) (Su
 	}, nil
 }
 
-func (tq *TaskQueue) RPCDriver() graft.RPCDriver {
-	return tq.rpc
-}
-
 func (tq *TaskQueue) Close() {
-	tq.conn.Close()
 	tq.enconn.Close()
 }
 
 func (tq *TaskQueue) Conn() *nats.Conn {
-	return tq.conn
-}
-
-func (tq *TaskQueue) EnConn() *nats.EncodedConn {
-	return tq.enconn
+	return tq.enconn.Conn
 }
 
 type TaskSubscription struct {
