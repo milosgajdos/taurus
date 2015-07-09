@@ -38,6 +38,8 @@ func (s State) String() string {
 		return "Doomed"
 	case Killing:
 		return "Killing"
+	case Dead:
+		return "Dead"
 	default:
 		return "Unknown"
 	}
@@ -72,7 +74,7 @@ type HealthCheck struct {
 	Failures uint32  `json:"failures"`
 }
 
-// JobTask defines Taurus Job
+// JobTask defines Taurus Job Task template
 type JobTask struct {
 	Cluster     string       `json:"cluster"`
 	Role        string       `json:"role"`
@@ -140,11 +142,11 @@ func createMesosTaskInfo(jobId string, task *JobTask) *mesos.TaskInfo {
 
 	// Set Task resources
 	if task.Resources != nil {
-		if task.Resources.Cpu != 0.0 {
+		if task.Resources.Cpu == 0.0 {
 			task.Resources.Cpu = DEFAULT_CPUS_PER_TASK
 		}
 
-		if task.Resources.Cpu != 0.0 {
+		if task.Resources.Cpu == 0.0 {
 			task.Resources.Memory = DEFAULT_MEM_PER_TASK
 		}
 	} else {

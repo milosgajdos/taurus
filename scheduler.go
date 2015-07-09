@@ -60,21 +60,21 @@ func (sched *Scheduler) Run(driver *sched.MesosSchedulerDriver) error {
 	go func() {
 		log.Printf("Starting %s task worker", Pending)
 		defer sched.wg.Done()
-		errChan <- sched.QPendingTasks()
+		errChan <- sched.ScheduleTasks()
 	}()
 
 	sched.wg.Add(1)
 	go func() {
 		log.Printf("Starting %s task worker", Doomed)
 		defer sched.wg.Done()
-		errChan <- sched.QDoomedTasks()
+		errChan <- sched.DoomTasks()
 	}()
 
 	sched.wg.Add(1)
 	go func() {
 		log.Printf("Starting task killer worker")
 		defer sched.wg.Done()
-		errChan <- sched.KillTasks(sched.master, driver)
+		errChan <- sched.KillTasks(driver)
 	}()
 
 	return <-errChan
@@ -87,7 +87,7 @@ func (sched *Scheduler) Stop() {
 	return
 }
 
-func (sched *Scheduler) QPendingTasks() error {
+func (sched *Scheduler) ScheduleTasks() error {
 	state, queue := Pending, Pending.String()
 	errChan := make(chan error)
 	ticker := time.NewTicker(StoreScanTick * time.Second)
@@ -118,11 +118,7 @@ func (sched *Scheduler) QPendingTasks() error {
 					}
 					queued += 1
 				}
-				if queued == job.Task.Replicas {
-					job.State = Running
-				} else {
-					job.State = Scheduling
-				}
+				job.State = Scheduling
 				if err := sched.Store.UpdateJob(job); err != nil {
 					errChan <- fmt.Errorf("Failed to update job %s: %s", job.Id, err)
 				}
@@ -140,7 +136,7 @@ func (sched *Scheduler) QPendingTasks() error {
 	}
 }
 
-func (sched *Scheduler) QDoomedTasks() error {
+func (sched *Scheduler) DoomTasks() error {
 	state, queue := Doomed, Doomed.String()
 	errChan := make(chan error)
 	ticker := time.NewTicker(StoreScanTick * time.Second)
@@ -153,14 +149,14 @@ func (sched *Scheduler) QDoomedTasks() error {
 			for _, job := range jobs {
 				ctx, cancel := context.WithTimeout(
 					context.Background(), QueryMasterTimeout*time.Second)
-				taskIds, err := TaskIds(ctx, sched.master, job.Id,
+				taskIds, err := MesosTaskIds(ctx, sched.master, job.Id,
 					mesos.TaskState_TASK_RUNNING.Enum())
 				if err != nil {
-					log.Printf("Failed to retrieve TaskIds for Job %s: %s", job.Id, err)
+					log.Printf("Failed to retrieve Tasks for Job %s: %s", job.Id, err)
 					cancel()
 					continue
 				}
-				var queued uint32
+				// Queue tasks for killing
 				for _, taskId := range taskIds {
 					taskInfo := new(mesos.TaskInfo)
 					taskInfo.TaskId = util.NewTaskID(taskId)
@@ -173,13 +169,23 @@ func (sched *Scheduler) QDoomedTasks() error {
 						log.Printf("Failed to queue %s: %s", taskId, err)
 						continue
 					}
-					queued += 1
 				}
-				if queued == job.Task.Replicas {
-					job.State = Dead
-				} else {
-					job.State = Killing
+				// Delete Doomed tasks which haven't been launched yet
+				tasks, err := sched.Store.GetTasks(job.Id)
+				if err != nil {
+					log.Printf("Failed to read Tasks for Job %s: %s", job.Id, err)
 				}
+				for _, task := range tasks {
+					taskId := task.Info.TaskId.GetValue()
+					if err := sched.Store.RemoveTask(taskId); err != nil {
+						log.Printf("Failed to remove %s task for job %s: %s",
+							taskId, job.Id, err)
+						continue
+					}
+					log.Printf("Removed %s task %s", state, taskId)
+				}
+
+				job.State = Killing
 				if err := sched.Store.UpdateJob(job); err != nil {
 					errChan <- fmt.Errorf("Failed to update job %s: %s", job.Id, err)
 				}
@@ -197,7 +203,7 @@ func (sched *Scheduler) QDoomedTasks() error {
 	}
 }
 
-func (sched *Scheduler) KillTasks(master string, driver *sched.MesosSchedulerDriver) error {
+func (sched *Scheduler) KillTasks(driver *sched.MesosSchedulerDriver) error {
 	queue := Doomed.String()
 	errChan := make(chan error)
 	go func() {
@@ -296,10 +302,15 @@ ReadOffers:
 		}
 
 		if len(launchTasks) > 0 {
-			log.Println("Launching", len(launchTasks), "tasks for offer", offer.Id.GetValue())
-			launchStatus, err := driver.LaunchTasks([]*mesos.OfferID{offer.Id}, launchTasks, &mesos.Filters{RefuseSeconds: proto.Float64(1)})
+			log.Printf("Launching %d tasks for offer %s",
+				len(launchTasks), offer.Id.GetValue())
+			launchStatus, err := driver.LaunchTasks(
+				[]*mesos.OfferID{offer.Id},
+				launchTasks,
+				&mesos.Filters{RefuseSeconds: proto.Float64(1)})
 			if err != nil {
-				log.Printf("Mesos status: %#v Failed to launch Tasks %s: %s", launchStatus, launchTasks, err)
+				log.Printf("Mesos status: %#v Failed to launch Tasks %s: %s",
+					launchStatus, launchTasks, err)
 				continue ReadOffers
 			}
 			for _, task := range launchTasks {
@@ -310,9 +321,12 @@ ReadOffers:
 			}
 		} else {
 			log.Println("Declining offer ", offer.Id.GetValue())
-			declineStatus, err := driver.DeclineOffer(offer.Id, &mesos.Filters{RefuseSeconds: proto.Float64(1)})
+			declineStatus, err := driver.DeclineOffer(
+				offer.Id,
+				&mesos.Filters{RefuseSeconds: proto.Float64(1)})
 			if err != nil {
-				log.Printf("Error declining offer for mesos status %#v: %s", declineStatus, err)
+				log.Printf("Error declining offer for mesos status %#v: %s",
+					declineStatus, err)
 			}
 		}
 	}

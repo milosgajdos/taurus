@@ -56,7 +56,7 @@ func MasterConnStr(masterInfo *mesos.MasterInfo) string {
 	return fmt.Sprintf("%s:%d", addr, port)
 }
 
-func TaskIds(ctx context.Context, master, jobId string, state *mesos.TaskState) ([]string, error) {
+func MesosTaskIds(ctx context.Context, master, jobId string, state *mesos.TaskState) ([]string, error) {
 	uri := fmt.Sprintf("http://%s/master/state.json", master)
 	req, err := http.NewRequest("GET", uri, nil)
 	if err != nil {
