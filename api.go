@@ -143,7 +143,9 @@ func delJob(c *Context, w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+
 	job.State = Doomed
+	log.Printf("Killing Job %s", job.Id)
 	if err := c.store.UpdateJob(job); err != nil {
 		log.Printf("Could not update job %s: %s", jobId, err)
 		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
