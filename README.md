@@ -1,3 +1,5 @@
+**THIS PROJECT IS BROKEN AND UNSTABLE. CONSIDER YOURSELF WARNED.**
+
 # taurus
 Simple Mesos Container framework written in Go
 
