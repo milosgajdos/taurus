@@ -29,6 +29,7 @@ type Scheduler struct {
 	Doomed  Subscription
 	master  string
 	done    chan struct{}
+	errChan chan error
 	wg      sync.WaitGroup
 }
 
@@ -42,6 +43,7 @@ func NewScheduler(store Store, queue Queue, master string) (*Scheduler, error) {
 		return nil, err
 	}
 	done := make(chan struct{})
+	errChan := make(chan error)
 
 	return &Scheduler{
 		Store:   store,
@@ -50,12 +52,13 @@ func NewScheduler(store Store, queue Queue, master string) (*Scheduler, error) {
 		Doomed:  doomed,
 		master:  master,
 		done:    done,
+		errChan: errChan,
 	}, nil
 }
 
-func (sched *Scheduler) Run(driver *sched.MesosSchedulerDriver) error {
+func (sched *Scheduler) Run(driver *sched.MesosSchedulerDriver) (err error) {
 	errChan := make(chan error, 5)
-
+	// Start all worker goroutines
 	sched.wg.Add(1)
 	go func() {
 		log.Printf("Starting %s task scheduler", Pending)
@@ -79,19 +82,26 @@ func (sched *Scheduler) Run(driver *sched.MesosSchedulerDriver) error {
 
 	sched.wg.Add(1)
 	go func() {
-		log.Printf("Starting %s reconciler", Scheduling)
+		log.Printf("Starting %s reconciler", Pending)
 		defer sched.wg.Done()
 		errChan <- sched.ReconcileScheduling()
 	}()
 
 	sched.wg.Add(1)
 	go func() {
-		log.Printf("Starting %s reconciler", Killing)
+		log.Printf("Starting %s reconciler", Doomed)
 		defer sched.wg.Done()
 		errChan <- sched.ReconcileKilling()
 	}()
 
-	return <-errChan
+	select {
+	case err = <-errChan:
+		log.Printf("Taurus worker finished")
+	case err = <-sched.errChan:
+		log.Printf("Mesos driver failed")
+	}
+
+	return err
 }
 
 func (sched *Scheduler) Stop() {
@@ -123,23 +133,19 @@ func (sched *Scheduler) ScheduleTasks() error {
 						task := &Task{
 							Info:  taskInfo,
 							JobId: job.Id,
-						}
-						if err := sched.Store.AddTask(task); err != nil {
-							log.Printf("Failed to store task %s: %s",
-								task.Info.TaskId.GetValue(), err)
-							continue
+							State: state,
 						}
 						taskId := taskInfo.TaskId.GetValue()
+						if err := sched.Store.AddTask(task); err != nil {
+							log.Printf("Failed to store task %s: %s",
+								taskId, err)
+							continue
+						}
 						log.Printf("Queueing task %s to %s queue", taskId, queue)
 						if err := sched.Queue.Publish(queue, task); err != nil {
 							log.Printf("Failed to queue %s: %s", taskId, err)
 							continue
 						}
-					}
-					job.State = Scheduling
-					if err := sched.Store.UpdateJob(job); err != nil {
-						schedErr = fmt.Errorf("Failed to update job %s: %s", job.Id, err)
-						break scanner
 					}
 				}
 			case <-sched.done:
@@ -189,14 +195,14 @@ func (sched *Scheduler) DoomTasks() error {
 						task := &Task{
 							Info:  taskInfo,
 							JobId: job.Id,
+							State: Doomed,
 						}
 						log.Printf("Queueing task %s to %s queue", taskId, queue)
 						if err := sched.Queue.Publish(queue, task); err != nil {
 							log.Printf("Failed to queue %s: %s", taskId, err)
-							continue
 						}
 					}
-					// Delete Doomed tasks which haven't been launched
+					// Delete Doomed Job tasks
 					tasks, err := sched.Store.GetTasks(job.Id)
 					if err != nil {
 						log.Printf("Failed to read tasks for Job %s: %s", job.Id, err)
@@ -204,17 +210,14 @@ func (sched *Scheduler) DoomTasks() error {
 					for _, task := range tasks {
 						taskId := task.Info.TaskId.GetValue()
 						if err := sched.Store.RemoveTask(taskId); err != nil {
-							log.Printf("Failed to remove %s task for job %s: %s",
-								taskId, job.Id, err)
+							if serr, ok := err.(*StoreError); ok {
+								if serr.Code != ErrNotFound {
+									log.Printf("Failed to remove %s task for job %s: %s",
+										taskId, job.Id, err)
+								}
+							}
 							continue
 						}
-						log.Printf("Removed %s task %s", state, taskId)
-					}
-
-					job.State = Killing
-					if err := sched.Store.UpdateJob(job); err != nil {
-						doomErr = fmt.Errorf("Failed to update job %s: %s", job.Id, err)
-						break scanner
 					}
 				}
 			case <-sched.done:
@@ -235,39 +238,56 @@ func (sched *Scheduler) KillTasks(driver *sched.MesosSchedulerDriver) error {
 	queue := Doomed.String()
 	errChan := make(chan error)
 	go func() {
+		var killErr error
+	killer:
 		for {
-			var retryCount int
-			task, err := sched.Doomed.NextTask(QueueTimeout * time.Second)
-			if err != nil {
-				switch err {
-				case nats.ErrTimeout:
-					log.Printf("No tasks to kill")
-				case nats.ErrConnectionClosed:
-					errChan <- nil
-				default:
-					retryCount += 1
-					log.Printf("Failed to read from %s queue: %s", queue, err)
+			select {
+			case <-sched.done:
+				log.Printf("Finishing Task killer")
+				killErr = nil
+				break killer
+			default:
+				var retryCount int
+				task, err := sched.Doomed.NextTask(QueueTimeout * time.Second)
+				if err != nil {
+					switch err {
+					case nats.ErrTimeout:
+						log.Printf("No tasks to kill")
+					case nats.ErrConnectionClosed:
+						killErr = nil
+						break
+					default:
+						retryCount += 1
+						log.Printf("Failed to read from %s queue: %s", queue, err)
+					}
+					if retryCount == QueueRetry {
+						killErr = fmt.Errorf("Error reading %s queue: %s", queue, err)
+						break killer
+					}
+					continue
 				}
-				if retryCount == QueueRetry {
-					errChan <- fmt.Errorf("Error reading %s queue: %s", queue, err)
+				taskId := task.Info.TaskId
+				killStatus, err := driver.KillTask(taskId)
+				if err != nil {
+					log.Printf("Mesos in state %s failed to kill the task %s: %s",
+						killStatus, taskId.GetValue(), err)
+					continue
 				}
-				continue
-			}
-			killStatus, err := driver.KillTask(task.Info.TaskId)
-			if err != nil {
-				log.Printf("Mesos in state %s failed to kill the task %s: %s",
-					killStatus, task.Info.TaskId.GetValue(), err)
+				if err := sched.Store.RemoveTask(taskId.GetValue()); err != nil {
+					if serr, ok := err.(*StoreError); ok {
+						if serr.Code != ErrNotFound {
+							log.Printf("Failed to remove task %s: %s",
+								taskId.GetValue(), err)
+						}
+					}
+				}
 			}
 		}
+		errChan <- killErr
+		log.Printf("Finished Task killer")
 	}()
 
-	select {
-	case <-sched.done:
-		log.Printf("Finished Task killer")
-		return nil
-	case err := <-errChan:
-		return err
-	}
+	return <-errChan
 }
 
 func (sched *Scheduler) reconcileJobs(currState, newState State, queue string, taskState *mesos.TaskState) error {
@@ -293,25 +313,28 @@ func (sched *Scheduler) reconcileJobs(currState, newState State, queue string, t
 		if uint32(launched) == job.Task.Replicas {
 			for _, task := range tasks {
 				taskId := task.Info.TaskId.GetValue()
-				if err := sched.Store.RemoveTask(taskId); err != nil {
-					log.Printf("Failed to remove %s task for job %s: %s",
-						taskId, job.Id, err)
+				task.State = newState
+				if err := sched.Store.UpdateTask(task); err != nil {
+					log.Printf("Failed to update %s task for job %s: %s",
+						task.Info.TaskId.GetValue(), job.Id, err)
 					continue
 				}
-				log.Printf("Removed %s task %s", queue, taskId)
+				log.Printf("Updated task %s to state: %s", taskId, Scheduled)
 			}
 			job.State = newState
 			if err := sched.Store.UpdateJob(job); err != nil {
 				return fmt.Errorf("Failed to update job %s: %s", job.Id, err)
 			}
-			continue
 		} else {
 			for _, task := range tasks {
-				taskId := task.Info.TaskId.GetValue()
-				log.Printf("Queueing task %s to %s queue", taskId, queue)
-				if err := sched.Queue.Publish(queue, task); err != nil {
-					log.Printf("Failed to queue %s: %s", taskId, err)
-					continue
+				// Only queue the ones in previous state
+				if task.State != newState {
+					taskId := task.Info.TaskId.GetValue()
+					log.Printf("Queueing task %s to %s queue", taskId, queue)
+					if err := sched.Queue.Publish(queue, task); err != nil {
+						log.Printf("Failed to queue %s: %s", taskId, err)
+						continue
+					}
 				}
 			}
 		}
@@ -320,8 +343,8 @@ func (sched *Scheduler) reconcileJobs(currState, newState State, queue string, t
 }
 
 func (sched *Scheduler) ReconcileScheduling() error {
-	currJobState := Scheduling
-	newJobState := Running
+	currJobState := Pending
+	newJobState := Scheduled
 	queue := Pending.String()
 	errChan := make(chan error)
 	ticker := time.NewTicker(StoreScanTick * time.Second)
@@ -351,10 +374,10 @@ func (sched *Scheduler) ReconcileScheduling() error {
 }
 
 func (sched *Scheduler) ReconcileKilling() error {
-	currJobState := Killing
+	currJobState := Doomed
 	newJobState := Dead
 	queue := Doomed.String()
-	taskState := mesos.TaskState_TASK_RUNNING.Enum()
+	taskState := mesos.TaskState_TASK_KILLED.Enum()
 	errChan := make(chan error)
 	ticker := time.NewTicker(StoreScanTick * time.Second)
 	go func() {
@@ -406,6 +429,7 @@ ReadOffers:
 
 		log.Println("Taurus Received Offer <", offer.Id.GetValue(), "> with cpus=", remainingCpus, " mem=", remainingMems)
 
+		launchTaskMap := make(map[string]bool)
 		launchTasks := make([]*mesos.TaskInfo, 0, 0)
 		var taskCpu, taskMem float64
 		var retryCount int
@@ -416,7 +440,7 @@ ReadOffers:
 				retryCount += 1
 				switch err {
 				case nats.ErrTimeout:
-					log.Printf("No pending tasks available")
+					log.Printf("No %s tasks available", Pending)
 				case nats.ErrConnectionClosed:
 					break ReadTasks
 				default:
@@ -428,11 +452,18 @@ ReadOffers:
 				continue ReadTasks
 			}
 			if task != nil {
+				taskId := task.Info.TaskId.GetValue()
+				// Don't add the same task twice intu launchTasks slice
+				if launchTaskMap[taskId] {
+					log.Printf("Skipping already queued Task %s", taskId)
+					continue ReadTasks
+				}
 				taskCpu = ScalarResourceVal("cpus", task.Info.Resources)
 				taskMem = ScalarResourceVal("mem", task.Info.Resources)
 				if remainingCpus >= taskCpu && remainingMems >= taskMem {
 					task.Info.SlaveId = offer.SlaveId
 					launchTasks = append(launchTasks, task.Info)
+					launchTaskMap[taskId] = true
 					remainingCpus -= taskCpu
 					remainingMems -= taskMem
 				} else {
@@ -453,10 +484,16 @@ ReadOffers:
 					launchStatus, launchTasks, err)
 				continue ReadOffers
 			}
-			for _, task := range launchTasks {
-				taskId := task.TaskId.GetValue()
-				if err := sched.Store.RemoveTask(taskId); err != nil {
-					log.Printf("Failed to remove task %s: %s", taskId, err)
+			for _, launchTask := range launchTasks {
+				taskId := launchTask.TaskId.GetValue()
+				jobId := ParseJobId(taskId)
+				task := &Task{
+					Info:  launchTask,
+					JobId: jobId,
+					State: Scheduled,
+				}
+				if err := sched.Store.UpdateTask(task); err != nil {
+					log.Printf("Failed to update task %s: %s", taskId, err)
 				}
 			}
 		} else {
@@ -486,5 +523,5 @@ func (sched *Scheduler) SlaveLost(sched.SchedulerDriver, *mesos.SlaveID) {}
 func (sched *Scheduler) ExecutorLost(sched.SchedulerDriver, *mesos.ExecutorID, *mesos.SlaveID, int) {}
 
 func (sched *Scheduler) Error(driver sched.SchedulerDriver, err string) {
-	log.Println("Scheduler received error:", err)
+	sched.errChan <- fmt.Errorf("cheduler received error: %s", err)
 }

@@ -15,10 +15,8 @@ type State int
 const (
 	// Taurus Job state
 	Pending State = iota + 1
-	Scheduling
-	Running
+	Scheduled
 	Doomed
-	Killing
 	Dead
 	Unknown
 	// Default Task resource allocations
@@ -30,14 +28,10 @@ func (s State) String() string {
 	switch s {
 	case Pending:
 		return "Pending"
-	case Scheduling:
-		return "Scheduling"
-	case Running:
-		return "Running"
+	case Scheduled:
+		return "Scheduled"
 	case Doomed:
 		return "Doomed"
-	case Killing:
-		return "Killing"
 	case Dead:
 		return "Dead"
 	default:
@@ -98,6 +92,7 @@ type Job struct {
 type Task struct {
 	Info  *mesos.TaskInfo `json:"info"`
 	JobId string          `json:"job_id"`
+	State State           `json:"task_state"`
 }
 
 func createMesosTaskInfo(jobId string, task *JobTask) *mesos.TaskInfo {

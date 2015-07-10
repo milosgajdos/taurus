@@ -26,6 +26,8 @@ type Store interface {
 	AddTask(*Task) error
 	// RemoveTask() removes scheduled tasks
 	RemoveTask(string) error
+	// UpdateTask() updates the stored task
+	UpdateTask(*Task) error
 	// GetTasks() returns a list of tasks for given Job
 	GetTasks(string) ([]*Task, error)
 }
@@ -267,8 +269,8 @@ func (bs *BasicStore) UpdateJob(job *Job) error {
 }
 
 func (bs *BasicStore) AddTask(task *Task) error {
-	taskId := task.Info.TaskId.GetValue()
 	return bs.withColContext("rw", "tasks", func(col *gkvlite.Collection) error {
+		taskId := task.Info.TaskId.GetValue()
 		if colItemExists(taskId, col) {
 			return &StoreError{Code: ErrExists}
 		}
@@ -293,6 +295,21 @@ func (bs *BasicStore) RemoveTask(taskId string) error {
 			return bs.store.Flush()
 		}
 		return &StoreError{Code: ErrNotFound}
+	})
+}
+
+func (bs *BasicStore) UpdateTask(task *Task) error {
+	return bs.withColContext("rw", "tasks", func(col *gkvlite.Collection) error {
+		taskId := task.Info.TaskId.GetValue()
+		t, err := json.Marshal(task)
+		if err != nil {
+			return &StoreError{Code: ErrFailedWrite, Err: err}
+		}
+		err = col.Set([]byte(taskId), t)
+		if err != nil {
+			return &StoreError{Code: ErrFailedWrite, Err: err}
+		}
+		return bs.store.Flush()
 	})
 }
 
