@@ -56,13 +56,13 @@ func MasterConnStr(masterInfo *mesos.MasterInfo) string {
 	return fmt.Sprintf("%s:%d", addr, port)
 }
 
-func TaskIds(ctx context.Context, master, jobId string) ([]string, error) {
+func MesosTasks(ctx context.Context, master, jobId string, state *mesos.TaskState) (map[string]string, error) {
 	uri := fmt.Sprintf("http://%s/master/state.json", master)
 	req, err := http.NewRequest("GET", uri, nil)
 	if err != nil {
 		return nil, err
 	}
-	var taskIds []string
+	mesosTasks := make(map[string]string)
 	err = httpDo(ctx, req, func(res *http.Response, err error) error {
 		if err != nil {
 			return err
@@ -77,8 +77,9 @@ func TaskIds(ctx context.Context, master, jobId string) ([]string, error) {
 			Frameworks []struct {
 				Name  string `json:"name"`
 				Tasks []struct {
-					Id    string `json:"id"`
-					State string `json:"state"`
+					Id      string `json:"id"`
+					State   string `json:"state"`
+					SlaveId string `json"slave_id"`
 				} `json:"tasks"`
 			} `json:"frameworks"`
 		}{}
@@ -93,15 +94,19 @@ func TaskIds(ctx context.Context, master, jobId string) ([]string, error) {
 			}
 			for _, task := range fw.Tasks {
 				if ParseJobId(task.Id) == jobId {
-					if task.State == "TASK_RUNNING" {
-						taskIds = append(taskIds, task.Id)
+					if state != nil {
+						if task.State == state.String() {
+							mesosTasks[task.Id] = task.SlaveId
+						}
+					} else {
+						mesosTasks[task.Id] = task.SlaveId
 					}
 				}
 			}
 		}
 		return nil
 	})
-	return taskIds, err
+	return mesosTasks, err
 }
 
 // Shamelessly stolen from https://github.com/mesos/mesos-go/blob/master/detector/standalone.go#L232

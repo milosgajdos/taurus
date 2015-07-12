@@ -10,15 +10,13 @@ import (
 	util "github.com/mesos/mesos-go/mesosutil"
 )
 
-type JobState int
+type State int
 
 const (
 	// Taurus Job state
-	Pending JobState = iota + 1
-	Scheduling
-	Running
+	Pending State = iota + 1
+	Scheduled
 	Doomed
-	Killing
 	Dead
 	Unknown
 	// Default Task resource allocations
@@ -26,18 +24,16 @@ const (
 	DEFAULT_MEM_PER_TASK  = 128
 )
 
-func (s JobState) String() string {
+func (s State) String() string {
 	switch s {
 	case Pending:
 		return "Pending"
-	case Scheduling:
-		return "Scheduling"
-	case Running:
-		return "Running"
+	case Scheduled:
+		return "Scheduled"
 	case Doomed:
 		return "Doomed"
-	case Killing:
-		return "Killing"
+	case Dead:
+		return "Dead"
 	default:
 		return "Unknown"
 	}
@@ -72,7 +68,7 @@ type HealthCheck struct {
 	Failures uint32  `json:"failures"`
 }
 
-// JobTask defines Taurus Job
+// JobTask defines Taurus Job Task template
 type JobTask struct {
 	Cluster     string       `json:"cluster"`
 	Role        string       `json:"role"`
@@ -89,13 +85,14 @@ type JobTask struct {
 type Job struct {
 	Id    string   `json:"id"`
 	Task  *JobTask `json:"task"`
-	State JobState `json:"state"`
+	State State    `json:"job_state"`
 }
 
 // Task is an instance of JobTask
 type Task struct {
 	Info  *mesos.TaskInfo `json:"info"`
 	JobId string          `json:"job_id"`
+	State State           `json:"task_state"`
 }
 
 func createMesosTaskInfo(jobId string, task *JobTask) *mesos.TaskInfo {
@@ -140,11 +137,11 @@ func createMesosTaskInfo(jobId string, task *JobTask) *mesos.TaskInfo {
 
 	// Set Task resources
 	if task.Resources != nil {
-		if task.Resources.Cpu != 0.0 {
+		if task.Resources.Cpu == 0.0 {
 			task.Resources.Cpu = DEFAULT_CPUS_PER_TASK
 		}
 
-		if task.Resources.Cpu != 0.0 {
+		if task.Resources.Cpu == 0.0 {
 			task.Resources.Memory = DEFAULT_MEM_PER_TASK
 		}
 	} else {
