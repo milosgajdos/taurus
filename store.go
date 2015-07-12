@@ -16,20 +16,24 @@ type Store interface {
 	RemoveJob(string) error
 	// Retrieve a Taurus job from Job catalog
 	GetJob(string) (*Job, error)
-	// Retrieve all Taurus Jobs from Job catalog
-	GetAllJobs() ([]*Job, error)
 	// Retrieve all Taurus Jobs in a given Job state
 	GetJobs(State) ([]*Job, error)
 	// UpdateJob Taurus Job in Job catalog
 	UpdateJob(*Job) error
+	// Retrieve all Taurus Jobs from Job catalog
+	GetAllJobs() ([]*Job, error)
 	// AddTask() temporarily stores
 	AddTask(*Task) error
 	// RemoveTask() removes scheduled tasks
 	RemoveTask(string) error
+	// GetTask(string) returns task
+	GetTask(string) (*Task, error)
+	// GetTasks() returns a list of tasks for given Job
+	GetTasks(State) ([]*Task, error)
 	// UpdateTask() updates the stored task
 	UpdateTask(*Task) error
 	// GetTasks() returns a list of tasks for given Job
-	GetTasks(string) ([]*Task, error)
+	GetJobTasks(string) ([]*Task, error)
 }
 
 type ErrorCode int
@@ -256,15 +260,18 @@ func (bs *BasicStore) GetJobs(state State) ([]*Job, error) {
 // UpdateJob() updates an existing Taurus Job
 func (bs *BasicStore) UpdateJob(job *Job) error {
 	return bs.withColContext("rw", "jobs", func(col *gkvlite.Collection) error {
-		j, err := json.Marshal(job)
-		if err != nil {
-			return &StoreError{Code: ErrFailedWrite, Err: err}
+		if colItemExists(job.Id, col) {
+			j, err := json.Marshal(job)
+			if err != nil {
+				return &StoreError{Code: ErrFailedWrite, Err: err}
+			}
+			err = col.Set([]byte(job.Id), j)
+			if err != nil {
+				return &StoreError{Code: ErrFailedWrite, Err: err}
+			}
+			return bs.store.Flush()
 		}
-		err = col.Set([]byte(job.Id), j)
-		if err != nil {
-			return &StoreError{Code: ErrFailedWrite, Err: err}
-		}
-		return bs.store.Flush()
+		return &StoreError{Code: ErrNotFound}
 	})
 }
 
@@ -298,22 +305,41 @@ func (bs *BasicStore) RemoveTask(taskId string) error {
 	})
 }
 
+func (bs *BasicStore) GetTask(taskId string) (*Task, error) {
+	task := new(Task)
+	err := bs.withColContext("r", "tasks", func(col *gkvlite.Collection) error {
+		if colItemExists(taskId, col) {
+			return bs.withRecordContext(taskId, col, func(record []byte) error {
+				if err := json.Unmarshal(record, task); err != nil {
+					return &StoreError{Code: ErrFailedRead, Err: err}
+				}
+				return nil
+			})
+		}
+		return &StoreError{Code: ErrNotFound}
+	})
+	return task, err
+}
+
 func (bs *BasicStore) UpdateTask(task *Task) error {
 	return bs.withColContext("rw", "tasks", func(col *gkvlite.Collection) error {
 		taskId := task.Info.TaskId.GetValue()
-		t, err := json.Marshal(task)
-		if err != nil {
-			return &StoreError{Code: ErrFailedWrite, Err: err}
+		if colItemExists(taskId, col) {
+			t, err := json.Marshal(task)
+			if err != nil {
+				return &StoreError{Code: ErrFailedWrite, Err: err}
+			}
+			err = col.Set([]byte(taskId), t)
+			if err != nil {
+				return &StoreError{Code: ErrFailedWrite, Err: err}
+			}
+			return bs.store.Flush()
 		}
-		err = col.Set([]byte(taskId), t)
-		if err != nil {
-			return &StoreError{Code: ErrFailedWrite, Err: err}
-		}
-		return bs.store.Flush()
+		return &StoreError{Code: ErrNotFound}
 	})
 }
 
-func (bs *BasicStore) GetTasks(jobId string) ([]*Task, error) {
+func (bs *BasicStore) GetJobTasks(jobId string) ([]*Task, error) {
 	tasks := make([]*Task, 0, 0)
 	err := bs.withColContext("r", "tasks", func(col *gkvlite.Collection) error {
 		var err error
@@ -324,6 +350,37 @@ func (bs *BasicStore) GetTasks(jobId string) ([]*Task, error) {
 					return &StoreError{Code: ErrFailedRead, Err: err}
 				}
 				if task.JobId == jobId {
+					tasks = append(tasks, task)
+				}
+				return nil
+			})
+
+			if err != nil {
+				return false
+			}
+
+			return true
+		})
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+func (bs *BasicStore) GetTasks(state State) ([]*Task, error) {
+	tasks := make([]*Task, 0, 0)
+	err := bs.withColContext("r", "tasks", func(col *gkvlite.Collection) error {
+		var err error
+		col.VisitItemsAscend([]byte(""), true, func(i *gkvlite.Item) bool {
+			err = bs.withRecordContext(string(i.Key), col, func(record []byte) error {
+				task := new(Task)
+				if err := json.Unmarshal(record, task); err != nil {
+					return &StoreError{Code: ErrFailedRead, Err: err}
+				}
+				if task.State == state {
 					tasks = append(tasks, task)
 				}
 				return nil

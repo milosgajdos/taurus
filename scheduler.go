@@ -19,6 +19,7 @@ const (
 	QueueTimeout       = 1
 	QueueRetry         = 5
 	StoreScanTick      = 3
+	ReconcileScanTick  = 5
 	QueryMasterTimeout = 2
 )
 
@@ -57,13 +58,20 @@ func NewScheduler(store Store, queue Queue, master string) (*Scheduler, error) {
 }
 
 func (sched *Scheduler) Run(driver *sched.MesosSchedulerDriver) (err error) {
-	errChan := make(chan error, 5)
+	errChan := make(chan error, 7)
 	// Start all worker goroutines
 	sched.wg.Add(1)
 	go func() {
-		log.Printf("Starting %s task scheduler", Pending)
+		log.Printf("Starting %s task generator", Pending)
 		defer sched.wg.Done()
-		errChan <- sched.ScheduleTasks()
+		errChan <- sched.GenerateTasks()
+	}()
+
+	sched.wg.Add(1)
+	go func() {
+		log.Printf("Starting %s task queuer", Pending)
+		defer sched.wg.Done()
+		errChan <- sched.QueuePendingTasks()
 	}()
 
 	sched.wg.Add(1)
@@ -84,19 +92,26 @@ func (sched *Scheduler) Run(driver *sched.MesosSchedulerDriver) (err error) {
 	go func() {
 		log.Printf("Starting %s reconciler", Pending)
 		defer sched.wg.Done()
-		errChan <- sched.ReconcileScheduling()
+		errChan <- sched.ReconcilePendingTasks()
 	}()
 
 	sched.wg.Add(1)
 	go func() {
 		log.Printf("Starting %s reconciler", Doomed)
 		defer sched.wg.Done()
-		errChan <- sched.ReconcileKilling()
+		errChan <- sched.ReconcileDoomedTasks()
+	}()
+
+	sched.wg.Add(1)
+	go func() {
+		log.Printf("Starting %s task cleaner", Doomed)
+		defer sched.wg.Done()
+		errChan <- sched.DoomCleaner()
 	}()
 
 	select {
 	case err = <-errChan:
-		log.Printf("Taurus worker finished")
+		log.Printf("Scheduler workers finished")
 	case err = <-sched.errChan:
 		log.Printf("Mesos driver failed")
 	}
@@ -111,52 +126,95 @@ func (sched *Scheduler) Stop() {
 	return
 }
 
-func (sched *Scheduler) ScheduleTasks() error {
+func (sched *Scheduler) GenerateTasks() error {
 	state := Pending
-	queue := Pending.String()
 	errChan := make(chan error)
 	ticker := time.NewTicker(StoreScanTick * time.Second)
 	go func() {
-		var schedErr error
-	scanner:
+		var genErr error
+	generator:
 		for {
 			select {
 			case <-ticker.C:
 				jobs, err := sched.Store.GetJobs(state)
 				if err != nil {
-					schedErr = fmt.Errorf("Error reading %s Jobs: %s", state, err)
-					break scanner
+					genErr = fmt.Errorf("Error reading %s Jobs: %s", state, err)
+					break generator
 				}
 				for _, job := range jobs {
-					for i := uint32(0); i < job.Task.Replicas; i++ {
+					tasks, err := sched.Store.GetJobTasks(job.Id)
+					if err != nil {
+						genErr = fmt.Errorf("Failed to read tasks for Job %s: %s", job.Id, err)
+						break generator
+					}
+					taskCount := job.Task.Replicas - uint32(len(tasks))
+					for i := uint32(0); i < taskCount; i++ {
 						taskInfo := createMesosTaskInfo(job.Id, job.Task)
 						task := &Task{
 							Info:  taskInfo,
 							JobId: job.Id,
-							State: state,
+							State: Pending,
 						}
-						taskId := taskInfo.TaskId.GetValue()
+						log.Printf("Creating new %s task %s for job %s",
+							state, task.Info.TaskId.GetValue(), job.Id)
 						if err := sched.Store.AddTask(task); err != nil {
-							log.Printf("Failed to store task %s: %s",
-								taskId, err)
-							continue
-						}
-						log.Printf("Queueing task %s to %s queue", taskId, queue)
-						if err := sched.Queue.Publish(queue, task); err != nil {
-							log.Printf("Failed to queue %s: %s", taskId, err)
-							continue
+							if serr, ok := err.(*StoreError); ok {
+								if serr.Code != ErrExists {
+									genErr = fmt.Errorf("Failed to store task %s: %s",
+										taskInfo.TaskId.GetValue(), err)
+									break generator
+								}
+							}
 						}
 					}
 				}
 			case <-sched.done:
-				log.Printf("Finished %s Job scanner", state)
 				ticker.Stop()
-				schedErr = nil
-				break scanner
+				genErr = nil
+				log.Printf("Finishing Task Generator")
+				break generator
 			}
 		}
-		errChan <- schedErr
-		log.Printf("%s tasks ticker stopped", state)
+		errChan <- genErr
+		log.Printf("Task generator ticker stopped")
+	}()
+
+	return <-errChan
+}
+
+func (sched *Scheduler) QueuePendingTasks() error {
+	state := Pending
+	queue := Pending.String()
+	errChan := make(chan error)
+	ticker := time.NewTicker(StoreScanTick * time.Second)
+	go func() {
+		var qErr error
+	queuer:
+		for {
+			select {
+			case <-ticker.C:
+				tasks, err := sched.Store.GetTasks(state)
+				if err != nil {
+					qErr = fmt.Errorf("Error reading %s Tasks: %s", state, err)
+					break queuer
+				}
+				for _, task := range tasks {
+					taskId := task.Info.TaskId.GetValue()
+					log.Printf("Queueing task %s to %s queue", taskId, queue)
+					if err := sched.Queue.Publish(queue, task); err != nil {
+						log.Printf("Failed to queue %s: %s", taskId, err)
+						continue
+					}
+				}
+			case <-sched.done:
+				ticker.Stop()
+				qErr = nil
+				log.Printf("Finishing %s Task queuer", state)
+				break queuer
+			}
+		}
+		errChan <- qErr
+		log.Printf("%s tasks queuer ticker stopped", state)
 	}()
 
 	return <-errChan
@@ -169,19 +227,19 @@ func (sched *Scheduler) DoomTasks() error {
 	ticker := time.NewTicker(StoreScanTick * time.Second)
 	go func() {
 		var doomErr error
-	scanner:
+	doomer:
 		for {
 			select {
 			case <-ticker.C:
 				jobs, err := sched.Store.GetJobs(state)
 				if err != nil {
 					doomErr = fmt.Errorf("Error reading %s Jobs: %s", state, err)
-					break scanner
+					break doomer
 				}
 				for _, job := range jobs {
 					ctx, cancel := context.WithTimeout(
 						context.Background(), QueryMasterTimeout*time.Second)
-					taskIds, err := MesosTaskIds(ctx, sched.master, job.Id,
+					mesosTasks, err := MesosTasks(ctx, sched.master, job.Id,
 						mesos.TaskState_TASK_RUNNING.Enum())
 					if err != nil {
 						log.Printf("Failed to read tasks for Job %s: %s", job.Id, err)
@@ -189,7 +247,7 @@ func (sched *Scheduler) DoomTasks() error {
 						continue
 					}
 					// Queue tasks for killing
-					for _, taskId := range taskIds {
+					for taskId, _ := range mesosTasks {
 						taskInfo := new(mesos.TaskInfo)
 						taskInfo.TaskId = util.NewTaskID(taskId)
 						task := &Task{
@@ -203,17 +261,19 @@ func (sched *Scheduler) DoomTasks() error {
 						}
 					}
 					// Delete Doomed Job tasks
-					tasks, err := sched.Store.GetTasks(job.Id)
+					tasks, err := sched.Store.GetJobTasks(job.Id)
 					if err != nil {
-						log.Printf("Failed to read tasks for Job %s: %s", job.Id, err)
+						doomErr = fmt.Errorf("Failed to read tasks for Job %s: %s", job.Id, err)
+						break doomer
 					}
 					for _, task := range tasks {
 						taskId := task.Info.TaskId.GetValue()
 						if err := sched.Store.RemoveTask(taskId); err != nil {
 							if serr, ok := err.(*StoreError); ok {
 								if serr.Code != ErrNotFound {
-									log.Printf("Failed to remove %s task for job %s: %s",
+									doomErr = fmt.Errorf("Failed to remove %s task for job %s: %s",
 										taskId, job.Id, err)
+									break doomer
 								}
 							}
 							continue
@@ -221,10 +281,10 @@ func (sched *Scheduler) DoomTasks() error {
 					}
 				}
 			case <-sched.done:
-				log.Printf("Finished %s Job scanner", state)
 				ticker.Stop()
 				doomErr = nil
-				break scanner
+				log.Printf("Finished %s task doomer", state)
+				break doomer
 			}
 		}
 		errChan <- doomErr
@@ -243,8 +303,8 @@ func (sched *Scheduler) KillTasks(driver *sched.MesosSchedulerDriver) error {
 		for {
 			select {
 			case <-sched.done:
-				log.Printf("Finishing Task killer")
 				killErr = nil
+				log.Printf("Finishing Task killer")
 				break killer
 			default:
 				var retryCount int
@@ -276,8 +336,9 @@ func (sched *Scheduler) KillTasks(driver *sched.MesosSchedulerDriver) error {
 				if err := sched.Store.RemoveTask(taskId.GetValue()); err != nil {
 					if serr, ok := err.(*StoreError); ok {
 						if serr.Code != ErrNotFound {
-							log.Printf("Failed to remove task %s: %s",
+							killErr = fmt.Errorf("Failed to remove task %s: %s",
 								taskId.GetValue(), err)
+							break killer
 						}
 					}
 				}
@@ -290,116 +351,179 @@ func (sched *Scheduler) KillTasks(driver *sched.MesosSchedulerDriver) error {
 	return <-errChan
 }
 
-func (sched *Scheduler) reconcileJobs(currState, newState State, queue string, taskState *mesos.TaskState) error {
-	jobs, err := sched.Store.GetJobs(currState)
-	if err != nil {
-		return fmt.Errorf("Error reading %s Jobs: %s", currState, err)
-	}
-	for _, job := range jobs {
-		ctx, cancel := context.WithTimeout(
-			context.Background(), QueryMasterTimeout*time.Second)
-		taskIds, err := MesosTaskIds(ctx, sched.master, job.Id, taskState)
-		if err != nil {
-			log.Printf("Failed to retrieve Tasks for Job %s: %s", job.Id, err)
-			cancel()
-			continue
-		}
-		launched := len(taskIds)
-		tasks, err := sched.Store.GetTasks(job.Id)
-		if err != nil {
-			log.Printf("Failed to read Tasks for Job %s: %s", job.Id, err)
-			continue
-		}
-		if uint32(launched) == job.Task.Replicas {
-			for _, task := range tasks {
-				taskId := task.Info.TaskId.GetValue()
-				task.State = newState
-				if err := sched.Store.UpdateTask(task); err != nil {
-					log.Printf("Failed to update %s task for job %s: %s",
-						task.Info.TaskId.GetValue(), job.Id, err)
-					continue
-				}
-				log.Printf("Updated task %s to state: %s", taskId, Scheduled)
-			}
-			job.State = newState
-			if err := sched.Store.UpdateJob(job); err != nil {
-				return fmt.Errorf("Failed to update job %s: %s", job.Id, err)
-			}
-		} else {
-			for _, task := range tasks {
-				// Only queue the ones in previous state
-				if task.State != newState {
-					taskId := task.Info.TaskId.GetValue()
-					log.Printf("Queueing task %s to %s queue", taskId, queue)
-					if err := sched.Queue.Publish(queue, task); err != nil {
-						log.Printf("Failed to queue %s: %s", taskId, err)
-						continue
-					}
-				}
-			}
-		}
-	}
-	return nil
-}
-
-func (sched *Scheduler) ReconcileScheduling() error {
-	currJobState := Pending
-	newJobState := Scheduled
+func (sched *Scheduler) ReconcilePendingTasks() error {
+	oldState := Pending
+	newState := Scheduled
 	queue := Pending.String()
 	errChan := make(chan error)
-	ticker := time.NewTicker(StoreScanTick * time.Second)
+	ticker := time.NewTicker(ReconcileScanTick * time.Second)
 	go func() {
-		log.Printf("%s Reconciler tick started", currJobState)
 		var reconErr error
 	reconcile:
 		for {
 			select {
 			case <-ticker.C:
-				reconErr = sched.reconcileJobs(currJobState, newJobState, queue, nil)
-				if reconErr != nil {
+				jobs, err := sched.Store.GetJobs(oldState)
+				if err != nil {
+					reconErr = fmt.Errorf("Error reading %s Jobs: %s", oldState, err)
 					break reconcile
 				}
+				for _, job := range jobs {
+					ctx, cancel := context.WithTimeout(
+						context.Background(), QueryMasterTimeout*time.Second)
+					mesosTasks, err := MesosTasks(ctx, sched.master, job.Id, nil)
+					if err != nil {
+						log.Printf("Failed to retrieve Tasks for Job %s: %s", job.Id, err)
+						cancel()
+						continue
+					}
+					launched := len(mesosTasks)
+					log.Printf("Launched tasks: %#v", mesosTasks)
+					if uint32(launched) == job.Task.Replicas {
+						job.State = newState
+						if err := sched.Store.UpdateJob(job); err != nil {
+							reconErr = fmt.Errorf("Failed to update job %s: %s", job.Id, err)
+							break reconcile
+						}
+						log.Printf("Job %s marked as %s", job.Id, newState)
+					} else {
+						tasks, err := sched.Store.GetJobTasks(job.Id)
+						if err != nil {
+							reconErr = fmt.Errorf("Failed to read Tasks for Job %s: %s", job.Id, err)
+							break reconcile
+						}
+						for _, task := range tasks {
+							if task.State != newState {
+								taskId := task.Info.TaskId.GetValue()
+								log.Printf("Queueing task %s to %s queue", taskId, queue)
+								if err := sched.Queue.Publish(queue, task); err != nil {
+									log.Printf("Failed to queue %s: %s", taskId, err)
+									continue
+								}
+							}
+						}
+					}
+				}
 			case <-sched.done:
-				log.Printf("Finished %s Job reconciler", currJobState)
+				log.Printf("Finished %s reconciler", oldState)
 				ticker.Stop()
 				reconErr = nil
 				break reconcile
 			}
 		}
 		errChan <- reconErr
-		log.Printf("%s Reconciler tick stopped", currJobState)
+		log.Printf("%s Reconciler tick stopped", oldState)
 	}()
 
 	return <-errChan
 }
 
-func (sched *Scheduler) ReconcileKilling() error {
-	currJobState := Doomed
-	newJobState := Dead
+func (sched *Scheduler) ReconcileDoomedTasks() error {
+	oldState := Doomed
+	newState := Dead
 	queue := Doomed.String()
-	taskState := mesos.TaskState_TASK_KILLED.Enum()
 	errChan := make(chan error)
-	ticker := time.NewTicker(StoreScanTick * time.Second)
+	ticker := time.NewTicker(ReconcileScanTick * time.Second)
 	go func() {
-		log.Printf("%s Reconciler tick started", currJobState)
 		var reconErr error
 	reconcile:
 		for {
 			select {
 			case <-ticker.C:
-				reconErr = sched.reconcileJobs(currJobState, newJobState, queue, taskState)
-				if reconErr != nil {
+				jobs, err := sched.Store.GetJobs(oldState)
+				if err != nil {
+					reconErr = fmt.Errorf("Error reading %s Jobs: %s", oldState, err)
 					break reconcile
 				}
+				for _, job := range jobs {
+					ctx, cancel := context.WithTimeout(
+						context.Background(), QueryMasterTimeout*time.Second)
+					mesosTasks, err := MesosTasks(ctx, sched.master, job.Id,
+						mesos.TaskState_TASK_KILLED.Enum())
+					if err != nil {
+						log.Printf("Failed to retrieve Tasks for Job %s: %s", job.Id, err)
+						cancel()
+						continue
+					}
+					tasks, err := sched.Store.GetJobTasks(job.Id)
+					if err != nil {
+						reconErr = fmt.Errorf("Failed to read Tasks for Job %s: %s", job.Id, err)
+						break reconcile
+					}
+					launched := len(mesosTasks)
+					if uint32(launched) == job.Task.Replicas {
+						job.State = newState
+						if err := sched.Store.UpdateJob(job); err != nil {
+							reconErr = fmt.Errorf("Failed to update job %s: %s", job.Id, err)
+							break reconcile
+						}
+						log.Printf("Job %s marked as %s", job.Id, newState)
+					} else {
+						for _, task := range tasks {
+							// Only queue the ones in old state which have SlaveId populated
+							taskId := task.Info.TaskId.GetValue()
+							if task.State != newState && task.Info.SlaveId.GetValue() != "" {
+								log.Printf("Queueing task %s to %s queue", taskId, queue)
+								if err := sched.Queue.Publish(queue, task); err != nil {
+									log.Printf("Failed to queue %s: %s", taskId, err)
+									continue
+								}
+							}
+						}
+					}
+				}
 			case <-sched.done:
-				log.Printf("Finished %s Job reconciler", currJobState)
 				ticker.Stop()
 				reconErr = nil
+				log.Printf("Finished %s Job reconciler", oldState)
 				break reconcile
 			}
 		}
 		errChan <- reconErr
-		log.Printf("%s Reconciler tick stopped", currJobState)
+		log.Printf("%s Reconciler tick stopped", oldState)
+	}()
+
+	return <-errChan
+}
+
+func (sched *Scheduler) DoomCleaner() error {
+	state := Doomed
+	errChan := make(chan error)
+	ticker := time.NewTicker(StoreScanTick * time.Second)
+	go func() {
+		log.Printf("%s Doom cleaner tick started", state)
+		var cleanErr error
+	cleaner:
+		for {
+			select {
+			case <-ticker.C:
+				tasks, err := sched.Store.GetTasks(state)
+				if err != nil {
+					cleanErr = fmt.Errorf("Failed to read %s Tasks: %s", state, err)
+					break cleaner
+				}
+				for _, task := range tasks {
+					taskId := task.Info.TaskId.GetValue()
+					if err := sched.Store.RemoveTask(taskId); err != nil {
+						if serr, ok := err.(*StoreError); ok {
+							if serr.Code != ErrNotFound {
+								cleanErr = fmt.Errorf("Failed to remove task %s: %s",
+									taskId, err)
+								break cleaner
+							}
+						}
+						continue
+					}
+				}
+			case <-sched.done:
+				ticker.Stop()
+				cleanErr = nil
+				log.Printf("Finished %s Cleaner", state)
+				break cleaner
+			}
+		}
+		errChan <- cleanErr
+		log.Printf("%s Cleaner tick stopped", state)
 	}()
 
 	return <-errChan
@@ -429,6 +553,7 @@ ReadOffers:
 
 		log.Println("Taurus Received Offer <", offer.Id.GetValue(), "> with cpus=", remainingCpus, " mem=", remainingMems)
 
+		// Mapp for each launch task batch
 		launchTaskMap := make(map[string]bool)
 		launchTasks := make([]*mesos.TaskInfo, 0, 0)
 		var taskCpu, taskMem float64
@@ -458,6 +583,19 @@ ReadOffers:
 					log.Printf("Skipping already queued Task %s", taskId)
 					continue ReadTasks
 				}
+				storeTask, err := sched.Store.GetTask(taskId)
+				if err != nil {
+					if serr, ok := err.(*StoreError); ok {
+						if serr.Code != ErrNotFound {
+							sched.errChan <- fmt.Errorf("Failed to read task %s: %s",
+								taskId, err)
+						}
+					}
+				}
+				if storeTask.State == Doomed {
+					log.Printf("Skipping %s task marked as doomed", storeTask.Info.TaskId.GetValue())
+					break ReadTasks
+				}
 				taskCpu = ScalarResourceVal("cpus", task.Info.Resources)
 				taskMem = ScalarResourceVal("mem", task.Info.Resources)
 				if remainingCpus >= taskCpu && remainingMems >= taskMem {
@@ -486,14 +624,30 @@ ReadOffers:
 			}
 			for _, launchTask := range launchTasks {
 				taskId := launchTask.TaskId.GetValue()
-				jobId := ParseJobId(taskId)
-				task := &Task{
-					Info:  launchTask,
-					JobId: jobId,
-					State: Scheduled,
+				storeTask, err := sched.Store.GetTask(taskId)
+				if err != nil {
+					if serr, ok := err.(*StoreError); ok {
+						if serr.Code != ErrNotFound {
+							sched.errChan <- fmt.Errorf("Failed to read task %s: %s",
+								taskId, err)
+						}
+					}
 				}
-				if err := sched.Store.UpdateTask(task); err != nil {
-					log.Printf("Failed to update task %s: %s", taskId, err)
+				if storeTask.State != Doomed {
+					jobId := ParseJobId(taskId)
+					task := &Task{
+						Info:  launchTask,
+						JobId: jobId,
+						State: Scheduled,
+					}
+					if err := sched.Store.UpdateTask(task); err != nil {
+						if serr, ok := err.(*StoreError); ok {
+							if serr.Code != ErrNotFound {
+								sched.errChan <- fmt.Errorf("Failed to update task %s: %s",
+									taskId, err)
+							}
+						}
+					}
 				}
 			}
 		} else {
