@@ -11,8 +11,9 @@ There is a lot of design flaws, lots of existing code would need to be refactore
 
 You can run **taurus** using docker-compose.
 
-**taurus** uses NATS distributed queue to queue pending and doomed tasks.
-**taurus** ships with local k/v store based on Coucbase local-gkvlite storage.
+**taurus** uses NATS distributed queue to queue pending and doomed tasks. You can implement your own queue that satisfies ```queue``` taurus Go interface and plug it into the framework.
+
+**taurus** ships with local k/v basic store implementation based on Couchbase's local-gkvlite storage. You can implement your own storage that satisfies ```store``` taurus Go interface and plug it into the framework.
 
 ## Example
 There are some example jobs in ```examplejobs``` directory.
