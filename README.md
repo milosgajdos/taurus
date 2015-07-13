@@ -8,7 +8,11 @@ There is a lot of design flaws, lots of existing code would need to be refactore
 
 ## Theory of operation
 **taurus** provides REST API that allows you to run Mesos tasks in Docker containers.
+
 You can run **taurus** using docker-compose.
+
+**taurus** uses NATS distributed queue to queue pending and doomed tasks.
+**taurus** ships with local k/v store based on Coucbase local-gkvlite storage.
 
 ## Example
 There are some example jobs in ```examplejobs``` directory.
@@ -90,3 +94,8 @@ CONTAINER ID        IMAGE               COMMAND             CREATED             
 
 # TODO
 **E_TOO_MUCH**
+- redesign a lot of things (I might spin another project from this)
+- implement re-registration and error recovery
+- implement etcd/consul/zk storage driver support
+- implement more scalable solution using something like graft by Apcera 
+AND THE LIST GOES ON AND ON AND ON
