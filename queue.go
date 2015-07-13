@@ -17,6 +17,8 @@ type Subscription interface {
 	AutoUnsubscribe(int) error
 	IsValid() bool
 	NextTask(time.Duration) (*Task, error)
+	TimedOut(error) bool
+	ConnClosed(error) bool
 	Unsubscribe() error
 }
 
@@ -84,6 +86,20 @@ func (t *TaskSubscription) NextTask(timeout time.Duration) (*Task, error) {
 		return nil, err
 	}
 	return task, nil
+}
+
+func (t *TaskSubscription) TimedOut(err error) bool {
+	if err == nats.ErrTimeout {
+		return true
+	}
+	return false
+}
+
+func (t *TaskSubscription) ConnClosed(err error) bool {
+	if err == nats.ErrConnectionClosed {
+		return true
+	}
+	return false
 }
 
 func (t *TaskSubscription) Unsubscribe() error {

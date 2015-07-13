@@ -12,7 +12,6 @@ import (
 	mesos "github.com/mesos/mesos-go/mesosproto"
 	util "github.com/mesos/mesos-go/mesosutil"
 	sched "github.com/mesos/mesos-go/scheduler"
-	"github.com/nats-io/nats"
 )
 
 const (
@@ -310,18 +309,21 @@ func (sched *Scheduler) KillTasks(driver *sched.MesosSchedulerDriver) error {
 				var retryCount int
 				task, err := sched.Doomed.NextTask(QueueTimeout * time.Second)
 				if err != nil {
-					switch err {
-					case nats.ErrTimeout:
+					switch {
+					case sched.Doomed.TimedOut(err):
 						log.Printf("No tasks to kill")
-					case nats.ErrConnectionClosed:
+					case sched.Doomed.ConnClosed(err):
 						killErr = nil
 						break
 					default:
 						retryCount += 1
-						log.Printf("Failed to read from %s queue: %s", queue, err)
+						log.Printf("Failed to read from %s queue: %s",
+							queue, err)
+
 					}
 					if retryCount == QueueRetry {
-						killErr = fmt.Errorf("Error reading %s queue: %s", queue, err)
+						killErr = fmt.Errorf("Error reading %s queue: %s",
+							queue, err)
 						break killer
 					}
 					continue
@@ -563,10 +565,10 @@ ReadOffers:
 			task, err := sched.Pending.NextTask(QueueTimeout * time.Second)
 			if err != nil {
 				retryCount += 1
-				switch err {
-				case nats.ErrTimeout:
+				switch {
+				case sched.Pending.TimedOut(err):
 					log.Printf("No %s tasks available", Pending)
-				case nats.ErrConnectionClosed:
+				case sched.Pending.ConnClosed(err):
 					break ReadTasks
 				default:
 					log.Printf("Failed to read from %s queue: %s", Pending, err)
