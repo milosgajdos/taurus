@@ -6,9 +6,9 @@ import (
 	"os"
 	"strings"
 
+	"github.com/milosgajdos83/taurus"
 	"github.com/milosgajdos83/taurus/queue"
 	"github.com/milosgajdos83/taurus/store"
-	"github.com/milosgajdos83/taurus/taurus"
 	"github.com/nats-io/nats"
 )
 
