@@ -6,15 +6,17 @@ import (
 	"os"
 	"strings"
 
-	"github.com/milosgajdos83/taurus"
+	"github.com/milosgajdos83/taurus/queue"
+	"github.com/milosgajdos83/taurus/store"
+	"github.com/milosgajdos83/taurus/taurus"
 	"github.com/nats-io/nats"
 )
 
 var (
-	master = flag.String("master", "localhost:5050", "Mesos master to register with")
-	listen = flag.String("listen", ":8080", "API listen address")
-	queue  = flag.String("queue", nats.DefaultURL, "Task Queue URL")
-	user   = flag.String("user", "", "User to execute tasks as")
+	master    = flag.String("master", "localhost:5050", "Mesos master to register with")
+	listen    = flag.String("listen", ":8080", "API listen address")
+	taskqueue = flag.String("taskqueue", "", "Task Queue URL")
+	user      = flag.String("user", "", "User to execute tasks as")
 )
 
 func init() {
@@ -43,7 +45,7 @@ func ParseCli() (string, string, []string) {
 
 	taskQueue := strings.Split(os.Getenv("TASK_QUEUE"), ",")
 	if len(taskQueue) == 1 && taskQueue[0] == "" {
-		taskQueue = []string{*queue}
+		taskQueue = []string{*taskqueue}
 	}
 
 	return masterAddr, listenAddr, taskQueue
@@ -51,14 +53,17 @@ func ParseCli() (string, string, []string) {
 
 func main() {
 	mesosMaster, listenAddr, queueServers := ParseCli()
-	ts, err := taurus.NewBasicStore("/tmp/taurus.db")
+	ts, err := store.NewBasicStore("/tmp/taurus.db")
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	options := &nats.DefaultOptions
+	if len(queueServers) == 1 && queueServers[0] == "" {
+		queueServers = append(queueServers, nats.DefaultURL)
+	}
 	options.Servers = queueServers
-	tq, err := taurus.NewTaskQueue(options, nats.JSON_ENCODER)
+	tq, err := queue.NewBasicQueue(options, nats.JSON_ENCODER)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -1,4 +1,4 @@
-package taurus
+package store
 
 import (
 	"encoding/json"
@@ -6,75 +6,9 @@ import (
 	"os"
 	"sync"
 
+	"github.com/milosgajdos83/taurus/taurus"
 	"github.com/steveyen/gkvlite"
 )
-
-type Store interface {
-	// Add a New Taurus Job to Job catalog
-	AddJob(*Job) error
-	// Remove a Taurus Job from Job catalog
-	RemoveJob(string) error
-	// Retrieve a Taurus job from Job catalog
-	GetJob(string) (*Job, error)
-	// Retrieve all Taurus Jobs in a given Job state
-	GetJobs(State) ([]*Job, error)
-	// UpdateJob Taurus Job in Job catalog
-	UpdateJob(*Job) error
-	// Retrieve all Taurus Jobs from Job catalog
-	GetAllJobs() ([]*Job, error)
-	// AddTask() temporarily stores
-	AddTask(*Task) error
-	// RemoveTask() removes scheduled tasks
-	RemoveTask(string) error
-	// GetTask(string) returns task
-	GetTask(string) (*Task, error)
-	// GetTasks() returns a list of tasks for given Job
-	GetTasks(State) ([]*Task, error)
-	// UpdateTask() updates the stored task
-	UpdateTask(*Task) error
-	// GetTasks() returns a list of tasks for given Job
-	GetJobTasks(string) ([]*Task, error)
-}
-
-type ErrorCode int
-
-const (
-	ErrFailedRead ErrorCode = iota + 1
-	ErrFailedWrite
-	ErrFailedDelete
-	ErrExists
-	ErrNotFound
-)
-
-func (ec ErrorCode) String() string {
-	switch ec {
-	case ErrFailedRead:
-		return "ErrFailedRead"
-	case ErrFailedWrite:
-		return "ErrFailedWrite"
-	case ErrFailedDelete:
-		return "ErrFailedDelete"
-	case ErrExists:
-		return "ErrExists"
-	case ErrNotFound:
-		return "ErrNotFound"
-	default:
-		return "Unknown"
-	}
-}
-
-type StoreError struct {
-	Code ErrorCode
-	Err  error
-}
-
-func (se *StoreError) Error() string {
-	s := se.Code.String()
-	if se.Err != nil {
-		s += se.Err.Error()
-	}
-	return fmt.Sprintf("[BasicStore] : %s", s)
-}
 
 type BasicStore struct {
 	store *gkvlite.Store
@@ -121,7 +55,10 @@ func (bs *BasicStore) withColContext(muType, colName string, fn func(col *gkvlit
 	}
 	c := bs.store.GetCollection(colName)
 	if c == nil {
-		return fmt.Errorf("Collection %s does not exist", colName)
+		return &taurus.StoreError{
+			Code: taurus.ErrNotFound,
+			Err:  fmt.Errorf("Collection %s does not exist", colName),
+		}
 	}
 	return fn(c)
 }
@@ -129,7 +66,7 @@ func (bs *BasicStore) withColContext(muType, colName string, fn func(col *gkvlit
 func (bs *BasicStore) withRecordContext(id string, col *gkvlite.Collection, fn func(record []byte) error) error {
 	record, err := col.Get([]byte(id))
 	if err != nil {
-		return &StoreError{Code: ErrFailedRead, Err: err}
+		return &taurus.StoreError{Code: taurus.ErrFailedRead, Err: err}
 	}
 	return fn(record)
 }
@@ -148,17 +85,20 @@ func colItemExists(key string, col *gkvlite.Collection) bool {
 }
 
 // AddJob() stores Taurus Job as JSON blob in Taurus store
-func (bs *BasicStore) AddJob(job *Job) error {
+func (bs *BasicStore) AddJob(job *taurus.Job) error {
 	return bs.withColContext("rw", "jobs", func(col *gkvlite.Collection) error {
 		if colItemExists(job.Id, col) {
-			return &StoreError{Code: ErrExists}
+			return &taurus.StoreError{
+				Code: taurus.ErrExists,
+				Err:  fmt.Errorf("AddJob() error"),
+			}
 		}
 		jobData, err := json.Marshal(job)
 		if err != nil {
-			return &StoreError{Code: ErrFailedWrite, Err: err}
+			return &taurus.StoreError{Code: taurus.ErrFailedWrite, Err: err}
 		}
 		if err := col.Set([]byte(job.Id), jobData); err != nil {
-			return &StoreError{Code: ErrFailedWrite, Err: err}
+			return &taurus.StoreError{Code: taurus.ErrFailedWrite, Err: err}
 		}
 		return bs.store.Flush()
 	})
@@ -170,41 +110,53 @@ func (bs *BasicStore) RemoveJob(jobId string) error {
 		if colItemExists(jobId, col) {
 			_, err := col.Delete([]byte(jobId))
 			if err != nil {
-				return &StoreError{Code: ErrFailedDelete, Err: err}
+				return &taurus.StoreError{Code: taurus.ErrFailedDelete, Err: err}
 			}
 			return bs.store.Flush()
 		}
-		return &StoreError{Code: ErrNotFound}
+		return &taurus.StoreError{
+			Code: taurus.ErrNotFound,
+			Err:  fmt.Errorf("RemoveJob() error"),
+		}
 	})
 }
 
 // GetJob() retrieves Taurus Job from Taurus store
-func (bs *BasicStore) GetJob(jobId string) (*Job, error) {
-	job := new(Job)
+func (bs *BasicStore) GetJob(jobId string) (*taurus.Job, error) {
+	job := new(taurus.Job)
 	err := bs.withColContext("r", "jobs", func(col *gkvlite.Collection) error {
 		if colItemExists(jobId, col) {
 			return bs.withRecordContext(jobId, col, func(record []byte) error {
 				if err := json.Unmarshal(record, job); err != nil {
-					return &StoreError{Code: ErrFailedRead, Err: err}
+					return &taurus.StoreError{
+						Code: taurus.ErrFailedRead,
+						Err:  err,
+					}
 				}
 				return nil
 			})
 		}
-		return &StoreError{Code: ErrNotFound}
+		return &taurus.StoreError{
+			Code: taurus.ErrNotFound,
+			Err:  fmt.Errorf("GetJob() error"),
+		}
 	})
 	return job, err
 }
 
 // Jobs() returns a slice of all Taurus Jobs
-func (bs *BasicStore) GetAllJobs() ([]*Job, error) {
-	jobs := make([]*Job, 0, 0)
+func (bs *BasicStore) GetAllJobs() ([]*taurus.Job, error) {
+	jobs := make([]*taurus.Job, 0, 0)
 	err := bs.withColContext("r", "jobs", func(col *gkvlite.Collection) error {
 		var err error
 		col.VisitItemsAscend([]byte(""), true, func(i *gkvlite.Item) bool {
 			err = bs.withRecordContext(string(i.Key), col, func(record []byte) error {
-				job := new(Job)
+				job := new(taurus.Job)
 				if err := json.Unmarshal(record, job); err != nil {
-					return &StoreError{Code: ErrFailedRead, Err: err}
+					return &taurus.StoreError{
+						Code: taurus.ErrFailedRead,
+						Err:  err,
+					}
 				}
 				jobs = append(jobs, job)
 				return nil
@@ -226,15 +178,18 @@ func (bs *BasicStore) GetAllJobs() ([]*Job, error) {
 }
 
 // Jobs() retrieves NEW Taurus Job from Taurus store
-func (bs *BasicStore) GetJobs(state State) ([]*Job, error) {
-	jobs := make([]*Job, 0, 0)
+func (bs *BasicStore) GetJobs(state taurus.State) ([]*taurus.Job, error) {
+	jobs := make([]*taurus.Job, 0, 0)
 	err := bs.withColContext("r", "jobs", func(col *gkvlite.Collection) error {
 		var err error
 		col.VisitItemsAscend([]byte(""), true, func(i *gkvlite.Item) bool {
 			err = bs.withRecordContext(string(i.Key), col, func(record []byte) error {
-				job := new(Job)
+				job := new(taurus.Job)
 				if err := json.Unmarshal(record, job); err != nil {
-					return &StoreError{Code: ErrFailedRead, Err: err}
+					return &taurus.StoreError{
+						Code: taurus.ErrFailedRead,
+						Err:  err,
+					}
 				}
 				if job.State == state {
 					jobs = append(jobs, job)
@@ -258,35 +213,41 @@ func (bs *BasicStore) GetJobs(state State) ([]*Job, error) {
 }
 
 // UpdateJob() updates an existing Taurus Job
-func (bs *BasicStore) UpdateJob(job *Job) error {
+func (bs *BasicStore) UpdateJob(job *taurus.Job) error {
 	return bs.withColContext("rw", "jobs", func(col *gkvlite.Collection) error {
 		if colItemExists(job.Id, col) {
 			j, err := json.Marshal(job)
 			if err != nil {
-				return &StoreError{Code: ErrFailedWrite, Err: err}
+				return &taurus.StoreError{Code: taurus.ErrFailedWrite, Err: err}
 			}
 			err = col.Set([]byte(job.Id), j)
 			if err != nil {
-				return &StoreError{Code: ErrFailedWrite, Err: err}
+				return &taurus.StoreError{Code: taurus.ErrFailedWrite, Err: err}
 			}
 			return bs.store.Flush()
 		}
-		return &StoreError{Code: ErrNotFound}
+		return &taurus.StoreError{
+			Code: taurus.ErrNotFound,
+			Err:  fmt.Errorf("UpdateJob"),
+		}
 	})
 }
 
-func (bs *BasicStore) AddTask(task *Task) error {
+func (bs *BasicStore) AddTask(task *taurus.Task) error {
 	return bs.withColContext("rw", "tasks", func(col *gkvlite.Collection) error {
 		taskId := task.Info.TaskId.GetValue()
 		if colItemExists(taskId, col) {
-			return &StoreError{Code: ErrExists}
+			return &taurus.StoreError{
+				Code: taurus.ErrExists,
+				Err:  fmt.Errorf("AddTask() eror"),
+			}
 		}
 		taskData, err := json.Marshal(task)
 		if err != nil {
-			return &StoreError{Code: ErrFailedWrite, Err: err}
+			return &taurus.StoreError{Code: taurus.ErrFailedWrite, Err: err}
 		}
 		if err := col.Set([]byte(taskId), taskData); err != nil {
-			return &StoreError{Code: ErrFailedWrite, Err: err}
+			return &taurus.StoreError{Code: taurus.ErrFailedWrite, Err: err}
 		}
 		return bs.store.Flush()
 	})
@@ -297,57 +258,66 @@ func (bs *BasicStore) RemoveTask(taskId string) error {
 		if colItemExists(taskId, col) {
 			_, err := col.Delete([]byte(taskId))
 			if err != nil {
-				return &StoreError{Code: ErrFailedDelete, Err: err}
+				return &taurus.StoreError{Code: taurus.ErrFailedDelete, Err: err}
 			}
 			return bs.store.Flush()
 		}
-		return &StoreError{Code: ErrNotFound}
+		return &taurus.StoreError{
+			Code: taurus.ErrNotFound,
+			Err:  fmt.Errorf("RemoveTask() error"),
+		}
 	})
 }
 
-func (bs *BasicStore) GetTask(taskId string) (*Task, error) {
-	task := new(Task)
+func (bs *BasicStore) GetTask(taskId string) (*taurus.Task, error) {
+	task := new(taurus.Task)
 	err := bs.withColContext("r", "tasks", func(col *gkvlite.Collection) error {
 		if colItemExists(taskId, col) {
 			return bs.withRecordContext(taskId, col, func(record []byte) error {
 				if err := json.Unmarshal(record, task); err != nil {
-					return &StoreError{Code: ErrFailedRead, Err: err}
+					return &taurus.StoreError{Code: taurus.ErrFailedRead, Err: err}
 				}
 				return nil
 			})
 		}
-		return &StoreError{Code: ErrNotFound}
+		return &taurus.StoreError{
+			Code: taurus.ErrNotFound,
+			Err:  fmt.Errorf("GetTask() error"),
+		}
 	})
 	return task, err
 }
 
-func (bs *BasicStore) UpdateTask(task *Task) error {
+func (bs *BasicStore) UpdateTask(task *taurus.Task) error {
 	return bs.withColContext("rw", "tasks", func(col *gkvlite.Collection) error {
 		taskId := task.Info.TaskId.GetValue()
 		if colItemExists(taskId, col) {
 			t, err := json.Marshal(task)
 			if err != nil {
-				return &StoreError{Code: ErrFailedWrite, Err: err}
+				return &taurus.StoreError{Code: taurus.ErrFailedWrite, Err: err}
 			}
 			err = col.Set([]byte(taskId), t)
 			if err != nil {
-				return &StoreError{Code: ErrFailedWrite, Err: err}
+				return &taurus.StoreError{Code: taurus.ErrFailedWrite, Err: err}
 			}
 			return bs.store.Flush()
 		}
-		return &StoreError{Code: ErrNotFound}
+		return &taurus.StoreError{
+			Code: taurus.ErrNotFound,
+			Err:  fmt.Errorf("UpdateTask() error"),
+		}
 	})
 }
 
-func (bs *BasicStore) GetJobTasks(jobId string) ([]*Task, error) {
-	tasks := make([]*Task, 0, 0)
+func (bs *BasicStore) GetJobTasks(jobId string) ([]*taurus.Task, error) {
+	tasks := make([]*taurus.Task, 0, 0)
 	err := bs.withColContext("r", "tasks", func(col *gkvlite.Collection) error {
 		var err error
 		col.VisitItemsAscend([]byte(""), true, func(i *gkvlite.Item) bool {
 			err = bs.withRecordContext(string(i.Key), col, func(record []byte) error {
-				task := new(Task)
+				task := new(taurus.Task)
 				if err := json.Unmarshal(record, task); err != nil {
-					return &StoreError{Code: ErrFailedRead, Err: err}
+					return &taurus.StoreError{Code: taurus.ErrFailedRead, Err: err}
 				}
 				if task.JobId == jobId {
 					tasks = append(tasks, task)
@@ -370,15 +340,18 @@ func (bs *BasicStore) GetJobTasks(jobId string) ([]*Task, error) {
 	return tasks, nil
 }
 
-func (bs *BasicStore) GetTasks(state State) ([]*Task, error) {
-	tasks := make([]*Task, 0, 0)
+func (bs *BasicStore) GetTasks(state taurus.State) ([]*taurus.Task, error) {
+	tasks := make([]*taurus.Task, 0, 0)
 	err := bs.withColContext("r", "tasks", func(col *gkvlite.Collection) error {
 		var err error
 		col.VisitItemsAscend([]byte(""), true, func(i *gkvlite.Item) bool {
 			err = bs.withRecordContext(string(i.Key), col, func(record []byte) error {
-				task := new(Task)
+				task := new(taurus.Task)
 				if err := json.Unmarshal(record, task); err != nil {
-					return &StoreError{Code: ErrFailedRead, Err: err}
+					return &taurus.StoreError{
+						Code: taurus.ErrFailedRead,
+						Err:  err,
+					}
 				}
 				if task.State == state {
 					tasks = append(tasks, task)
