@@ -99,4 +99,5 @@ CONTAINER ID        IMAGE               COMMAND             CREATED             
 - implement re-registration and error recovery
 - implement etcd/consul/zk storage driver support
 - implement more scalable solution using something like graft by Apcera 
+
 AND THE LIST GOES ON AND ON AND ON
