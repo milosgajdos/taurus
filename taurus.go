@@ -28,7 +28,9 @@ type Config struct {
 	// Framework store
 	Store Store
 	// Task Queue
-	Queue Queue
+	Queue TaskQueue
+	// Task Worker
+	Worker TaskWorker
 	// TLS configuration
 	TlsConfig *tls.Config
 }
@@ -46,7 +48,7 @@ func NewFramework(config *Config) (*Taurus, error) {
 		Name: proto.String(FrameworkName),
 	}
 
-	sched, err := NewScheduler(config.Store, config.Queue, config.Master)
+	sched, err := NewScheduler(config.Store, config.Queue, config.Worker, config.Master)
 	if err != nil {
 		return nil, fmt.Errorf("Unable to create %s Scheduler: %s", FrameworkName, err)
 	}

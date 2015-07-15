@@ -9,7 +9,7 @@ import (
 	"github.com/milosgajdos83/taurus"
 	"github.com/milosgajdos83/taurus/queue"
 	"github.com/milosgajdos83/taurus/store"
-	"github.com/nats-io/nats"
+	"github.com/milosgajdos83/taurus/worker"
 )
 
 var (
@@ -58,12 +58,17 @@ func main() {
 		log.Fatal(err)
 	}
 
-	options := &nats.DefaultOptions
+	options := queue.DefaultOptions
 	if len(queueServers) == 1 && queueServers[0] == "" {
-		queueServers = append(queueServers, nats.DefaultURL)
+		queueServers = append(queueServers, queue.DefaultURL)
 	}
 	options.Servers = queueServers
-	tq, err := queue.NewBasicQueue(options, nats.JSON_ENCODER)
+	tq, err := queue.NewBasicQueue(options, queue.DefaultEncoder)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	tw, err := worker.NewBasicTaskWorker(ts, tq, mesosMaster)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -74,6 +79,7 @@ func main() {
 		User:       *user,
 		Store:      ts,
 		Queue:      tq,
+		Worker:     tw,
 	})
 	if err != nil {
 		log.Fatal(err)
