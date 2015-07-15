@@ -4,16 +4,19 @@
 Simple Mesos Container framework written in Go.
 
 At the moment this is just a **PoC** serving for learning purpose. I'm not sure if I turn into more than just that.
-There is a lot of design flaws, lots of existing code would need to be refactored.
+There is a lot of design flaws - lots of existing code would need to be refactored to make this useful.
 
 ## Theory of operation
-**taurus** provides REST API that allows you to run Mesos tasks in Docker containers.
+**taurus** provides REST API that allows you to submit taurus Jobs and run them as Mesos tasks in Docker containers.
 
 You can run **taurus** using docker-compose.
 
-**taurus** uses NATS distributed queue to queue pending and doomed tasks. You can implement your own queue that satisfies ```queue``` taurus Go interface and plug it into the framework.
+Out of the box:
+- **taurus** uses [NATS](https://github.com/nats-io/nats) distributed queue to queue pending and doomed tasks. You can implement your own queue that satisfies taurus ```queue``` Go interface and replace the basic queue implementation which uses NATS.
 
-**taurus** ships with local k/v basic store implementation based on Couchbase's local-gkvlite storage. You can implement your own storage that satisfies ```store``` taurus Go interface and plug it into the framework.
+- **taurus** ships with local k/v basic store implementation based on Couchbase's [gkvlite](https://github.com/steveyen/gkvlite) storage. You can implement your own task store that satisfies taurus ```store``` Go interface and replace the basic store implementation which uses gkvlite.
+
+- **taurus** ships with its own scheduler workers which are responsible for detecting state of Jobs and queueing them to particular queues. You can implement your own worker which satisfied taurus ```worker``` Go interface and replace the basic worker implementation.
 
 ## Example
 There are some example jobs in ```examplejobs``` directory.
