@@ -31,7 +31,7 @@ type BasicTaskWorker struct {
 	wg     sync.WaitGroup
 }
 
-func NewBasicTaskWorker(store taurus.Store, queue taurus.TaskQueue, master string) (*BasicTaskWorker, error) {
+func NewBasicTaskWorker(store taurus.Store, queue taurus.TaskQueue) (*BasicTaskWorker, error) {
 	done := make(chan struct{})
 	doomed, err := queue.Subscribe(taurus.Doomed.String())
 	if err != nil {
@@ -41,12 +41,12 @@ func NewBasicTaskWorker(store taurus.Store, queue taurus.TaskQueue, master strin
 		store:  store,
 		queue:  queue,
 		doomed: doomed,
-		master: master,
 		done:   done,
 	}, nil
 }
 
-func (tw *BasicTaskWorker) Run(driver *scheduler.MesosSchedulerDriver) <-chan error {
+func (tw *BasicTaskWorker) Run(driver scheduler.SchedulerDriver, master string) error {
+	tw.master = master
 	errChan := make(chan error, 7)
 
 	// Start worker goroutines
@@ -99,10 +99,10 @@ func (tw *BasicTaskWorker) Run(driver *scheduler.MesosSchedulerDriver) <-chan er
 		errChan <- tw.ReconcileDoomedTasks()
 	}()
 
-	return errChan
+	return <-errChan
 }
 
-func (tw *BasicTaskWorker) KillDoomedTasks(driver *scheduler.MesosSchedulerDriver) error {
+func (tw *BasicTaskWorker) KillDoomedTasks(driver scheduler.SchedulerDriver) error {
 	queue := taurus.Doomed.String()
 	errChan := make(chan error)
 	go func() {

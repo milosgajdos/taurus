@@ -3,8 +3,8 @@ package taurus
 import "github.com/mesos/mesos-go/scheduler"
 
 type TaskWorker interface {
-	Run(*scheduler.MesosSchedulerDriver) <-chan error
-	KillDoomedTasks(*scheduler.MesosSchedulerDriver) error
+	Run(scheduler.SchedulerDriver, string) error
+	KillDoomedTasks(scheduler.SchedulerDriver) error
 	GeneratePendingTasks() error
 	QueuePendingTasks() error
 	QueueDoomedTasks() error

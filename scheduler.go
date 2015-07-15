@@ -42,14 +42,7 @@ func NewScheduler(store Store, queue TaskQueue, worker TaskWorker, master string
 }
 
 func (sched *Scheduler) Run(driver *sched.MesosSchedulerDriver) (err error) {
-	select {
-	case err = <-sched.Worker.Run(driver):
-		log.Printf("Scheduler workers finished")
-	case err = <-sched.errChan:
-		log.Printf("Mesos driver failed")
-	}
-
-	return err
+	return <-sched.errChan
 }
 
 func (sched *Scheduler) Stop() {
@@ -62,12 +55,24 @@ func (sched *Scheduler) Stop() {
 func (sched *Scheduler) Registered(driver sched.SchedulerDriver, frameworkId *mesos.FrameworkID, masterInfo *mesos.MasterInfo) {
 	log.Println("Taurus Framework Registered with Master", masterInfo)
 	sched.master = MasterConnStr(masterInfo)
+	// Start the scheduler worker
+	go func() {
+		log.Printf("Starting %s framework scheduler worker", FrameworkName)
+		sched.errChan <- sched.Worker.Run(driver, sched.master)
+	}()
 }
 
 func (sched *Scheduler) Reregistered(driver sched.SchedulerDriver, masterInfo *mesos.MasterInfo) {
-	//TODO: We must reconcile the JobTasks here with what is in the store
+	//TODO: We must reconcile the Job Tasks here with what is in the store
+	// Stop scheduler worker
+	sched.Worker.Stop()
 	log.Println("Taurus Framework Re-Registered with Master", masterInfo)
 	sched.master = MasterConnStr(masterInfo)
+	// Restart scheduler worker
+	go func() {
+		log.Printf("Starting %s framework scheduler worker", FrameworkName)
+		sched.errChan <- sched.Worker.Run(driver, sched.master)
+	}()
 }
 
 func (sched *Scheduler) Disconnected(sched.SchedulerDriver) {
