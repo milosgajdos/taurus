@@ -95,7 +95,7 @@ type Task struct {
 	State State           `json:"task_state"`
 }
 
-func createMesosTaskInfo(jobId string, task *JobTask) *mesos.TaskInfo {
+func CreateMesosTaskInfo(jobId string, task *JobTask) *mesos.TaskInfo {
 	// TODO: Needs proper randomization
 	taskIdValue := fmt.Sprintf("%s-%s-%s-%d-%s",
 		jobId,

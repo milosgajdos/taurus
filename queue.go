@@ -3,14 +3,14 @@ package taurus
 import "time"
 
 type Subscription interface {
+	ReadTask(time.Duration) (*Task, error)
 	AutoUnsubscribe(int) error
-	NextTask(time.Duration) (*Task, error)
-	TimedOut(error) bool
-	ConnClosed(error) bool
 	Unsubscribe() error
+	TimedOut(error) bool
+	Closed(error) bool
 }
 
-type Queue interface {
+type TaskQueue interface {
 	Publish(string, interface{}) error
 	Subscribe(string) (Subscription, error)
 	Close()

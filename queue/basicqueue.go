@@ -8,6 +8,13 @@ import (
 	"github.com/nats-io/nats"
 )
 
+const (
+	DefaultURL     = nats.DefaultURL
+	DefaultEncoder = nats.JSON_ENCODER
+)
+
+var DefaultOptions = &nats.DefaultOptions
+
 type BasicQueue struct {
 	enconn *nats.EncodedConn
 }
@@ -54,11 +61,7 @@ type TaskSubscription struct {
 	sub *nats.Subscription
 }
 
-func (ts *TaskSubscription) AutoUnsubscribe(max int) error {
-	return ts.sub.AutoUnsubscribe(max)
-}
-
-func (ts *TaskSubscription) NextTask(timeout time.Duration) (*taurus.Task, error) {
+func (ts *TaskSubscription) ReadTask(timeout time.Duration) (*taurus.Task, error) {
 	m, err := ts.sub.NextMsg(timeout)
 	if err != nil {
 		return nil, err
@@ -70,6 +73,14 @@ func (ts *TaskSubscription) NextTask(timeout time.Duration) (*taurus.Task, error
 	return task, nil
 }
 
+func (ts *TaskSubscription) AutoUnsubscribe(max int) error {
+	return ts.sub.AutoUnsubscribe(max)
+}
+
+func (ts *TaskSubscription) Unsubscribe() error {
+	return ts.sub.Unsubscribe()
+}
+
 func (ts *TaskSubscription) TimedOut(err error) bool {
 	if err == nats.ErrTimeout {
 		return true
@@ -77,13 +88,9 @@ func (ts *TaskSubscription) TimedOut(err error) bool {
 	return false
 }
 
-func (ts *TaskSubscription) ConnClosed(err error) bool {
+func (ts *TaskSubscription) Closed(err error) bool {
 	if err == nats.ErrConnectionClosed {
 		return true
 	}
 	return false
-}
-
-func (ts *TaskSubscription) Unsubscribe() error {
-	return ts.sub.Unsubscribe()
 }
