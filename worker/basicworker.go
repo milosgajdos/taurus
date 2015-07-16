@@ -25,7 +25,6 @@ const (
 type BasicTaskWorker struct {
 	store  taurus.Store
 	queue  taurus.TaskQueue
-	doomed taurus.Subscription
 	master string
 	done   chan struct{}
 	wg     sync.WaitGroup
@@ -33,15 +32,10 @@ type BasicTaskWorker struct {
 
 func NewBasicTaskWorker(store taurus.Store, queue taurus.TaskQueue) (*BasicTaskWorker, error) {
 	done := make(chan struct{})
-	doomed, err := queue.Subscribe(taurus.DoomedQ)
-	if err != nil {
-		return nil, err
-	}
 	return &BasicTaskWorker{
-		store:  store,
-		queue:  queue,
-		doomed: doomed,
-		done:   done,
+		store: store,
+		queue: queue,
+		done:  done,
 	}, nil
 }
 

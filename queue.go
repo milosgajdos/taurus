@@ -3,7 +3,6 @@ package taurus
 import "time"
 
 const (
-	DoomedQ  = "doomed"
 	PendingQ = "pending"
 )
 
