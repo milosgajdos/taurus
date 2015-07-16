@@ -25,7 +25,7 @@ type Scheduler struct {
 }
 
 func NewScheduler(store Store, queue TaskQueue, worker JobWorker, master string) (*Scheduler, error) {
-	pending, err := queue.Subscribe(PENDING.String())
+	pending, err := queue.Subscribe(PendingQ)
 	if err != nil {
 		return nil, err
 	}

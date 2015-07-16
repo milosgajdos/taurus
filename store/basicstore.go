@@ -30,10 +30,6 @@ func NewBasicStore(fileName string) (*BasicStore, error) {
 		s.SetCollection("jobs", nil)
 	}
 
-	if s.GetCollection("tasks") == nil {
-		s.SetCollection("tasks", nil)
-	}
-
 	err = s.Flush()
 	if err != nil {
 		return nil, err
