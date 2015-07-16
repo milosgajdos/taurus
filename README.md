@@ -14,9 +14,9 @@ You can run **taurus** using docker-compose.
 Out of the box:
 - **taurus** uses [NATS](https://github.com/nats-io/nats) distributed queue to queue pending and doomed tasks. You can implement your own queue that satisfies taurus ```queue``` interface and replace the basic queue implementation which uses NATS.
 
-- **taurus** ships with basic Job/Task store implementation based on Couchbase inspired [gkvlite](https://github.com/steveyen/gkvlite). You can implement your own Task store that satisfies taurus ```store``` Go interface and replace the basic store implementation which uses gkvlite.
+- **taurus** ships with basic Job store implementation based on by Couchbase inspired [gkvlite](https://github.com/steveyen/gkvlite). You can implement your own Job store that satisfies taurus ```store``` Go interface and replace the basic store implementation which uses gkvlite.
 
-- **taurus** ships with its own scheduler worker which is responsible for detecting state of submitted Jobs and taking appropriate action like queueing them to particular queues, killing the doomed jobs etc. You can implement your own worker which satisfies taurus ```worker``` interface and replace the basic worker implementation.
+- **taurus** ships with its own scheduler worker which is responsible for detecting state of submitted Jobs and taking appropriate action like queueing them to particular queues, killing the doomed jobs etc. You can implement your own worker which satisfies taurus ```worker``` interface and replace the basic worker implementation. Worker does the heavy lifting behind queueing new Job Tasks and Killing stopped Job Tasks.
 
 ## Example
 There are some example jobs in ```examplejobs``` directory.
@@ -97,9 +97,9 @@ CONTAINER ID        IMAGE               COMMAND             CREATED             
 ```
 
 # TODO
-**E_TOO_MUCH**
+**E_TOO_MUCH**, but in a gist:
+
 - redesign a lot of things (I might spin another project from this)
-- implement re-registration and error recovery
 - implement etcd/consul/zk storage driver support
 - implement more scalable solution using something like graft by Apcera 
 
