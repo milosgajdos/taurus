@@ -1,15 +1,18 @@
 package taurus
 
-import "github.com/mesos/mesos-go/scheduler"
+import (
+	mesos "github.com/mesos/mesos-go/mesosproto"
+	"github.com/mesos/mesos-go/scheduler"
+)
 
 type TaskWorker interface {
-	Run(scheduler.SchedulerDriver, string) error
+	Run(scheduler.SchedulerDriver, *mesos.MasterInfo) error
 	KillDoomedTasks(scheduler.SchedulerDriver) error
 	GeneratePendingTasks() error
 	QueuePendingTasks() error
+	MarkDoomedTasks() error
 	QueueDoomedTasks() error
-	CleanDoomedTasks() error
-	ReconcilePendingTasks() error
-	ReconcileDoomedTasks() error
+	ReconcilePendingJobs() error
+	ReconcileDoomedJobs() error
 	Stop()
 }

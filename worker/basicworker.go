@@ -9,7 +9,6 @@ import (
 	"golang.org/x/net/context"
 
 	mesos "github.com/mesos/mesos-go/mesosproto"
-	"github.com/mesos/mesos-go/mesosutil"
 	"github.com/mesos/mesos-go/scheduler"
 	"github.com/milosgajdos83/taurus"
 )
@@ -45,8 +44,8 @@ func NewBasicTaskWorker(store taurus.Store, queue taurus.TaskQueue) (*BasicTaskW
 	}, nil
 }
 
-func (tw *BasicTaskWorker) Run(driver scheduler.SchedulerDriver, master string) error {
-	tw.master = master
+func (tw *BasicTaskWorker) Run(driver scheduler.SchedulerDriver, masterInfo *mesos.MasterInfo) error {
+	tw.master = taurus.MasterConnStr(masterInfo)
 	errChan := make(chan error, 7)
 
 	// Start worker goroutines
@@ -66,6 +65,13 @@ func (tw *BasicTaskWorker) Run(driver scheduler.SchedulerDriver, master string) 
 
 	tw.wg.Add(1)
 	go func() {
+		log.Printf("Starting Doomed Task marker")
+		defer tw.wg.Done()
+		errChan <- tw.MarkDoomedTasks()
+	}()
+
+	tw.wg.Add(1)
+	go func() {
 		log.Printf("Starting Doomed Task queuer")
 		defer tw.wg.Done()
 		errChan <- tw.QueueDoomedTasks()
@@ -80,83 +86,16 @@ func (tw *BasicTaskWorker) Run(driver scheduler.SchedulerDriver, master string) 
 
 	tw.wg.Add(1)
 	go func() {
-		log.Printf("Starting Doomed Task cleaner")
-		defer tw.wg.Done()
-		errChan <- tw.CleanDoomedTasks()
-	}()
-
-	tw.wg.Add(1)
-	go func() {
 		log.Printf("Starting Pending Task reconciler")
 		defer tw.wg.Done()
-		errChan <- tw.ReconcilePendingTasks()
+		errChan <- tw.ReconcilePendingJobs()
 	}()
 
 	tw.wg.Add(1)
 	go func() {
 		log.Printf("Starting Doomed Task reconciler")
 		defer tw.wg.Done()
-		errChan <- tw.ReconcileDoomedTasks()
-	}()
-
-	return <-errChan
-}
-
-func (tw *BasicTaskWorker) KillDoomedTasks(driver scheduler.SchedulerDriver) error {
-	queue := taurus.Doomed.String()
-	errChan := make(chan error)
-	go func() {
-		var killErr error
-	killer:
-		for {
-			select {
-			case <-tw.done:
-				killErr = nil
-				log.Printf("Finishing %s Task killer", taurus.Doomed)
-				break killer
-			default:
-				var retryCount int
-				task, err := tw.doomed.ReadTask(QueueTimeout * time.Second)
-				if err != nil {
-					switch {
-					case tw.doomed.TimedOut(err):
-						log.Printf("No tasks to kill")
-					case tw.doomed.Closed(err):
-						killErr = nil
-						break
-					default:
-						retryCount += 1
-						log.Printf("Failed to read from %s queue: %s",
-							queue, err)
-
-					}
-					if retryCount == QueueRetry {
-						killErr = fmt.Errorf("Error reading %s queue: %s",
-							queue, err)
-						break killer
-					}
-					continue
-				}
-				taskId := task.Info.TaskId
-				killStatus, err := driver.KillTask(taskId)
-				if err != nil {
-					log.Printf("Mesos in state %s failed to kill the task %s: %s",
-						killStatus, taskId.GetValue(), err)
-					continue
-				}
-				if err := tw.store.RemoveTask(taskId.GetValue()); err != nil {
-					if serr, ok := err.(*taurus.StoreError); ok {
-						if serr.Code != taurus.ErrNotFound {
-							killErr = fmt.Errorf("Failed to remove task %s: %s",
-								taskId.GetValue(), err)
-							break killer
-						}
-					}
-				}
-			}
-		}
-		errChan <- killErr
-		log.Printf("Finished Doom Task killer")
+		errChan <- tw.ReconcileDoomedJobs()
 	}()
 
 	return <-errChan
@@ -256,9 +195,8 @@ func (tw *BasicTaskWorker) QueuePendingTasks() error {
 	return <-errChan
 }
 
-func (tw *BasicTaskWorker) QueueDoomedTasks() error {
+func (tw *BasicTaskWorker) MarkDoomedTasks() error {
 	state := taurus.Doomed
-	queue := taurus.Doomed.String()
 	errChan := make(chan error)
 	ticker := time.NewTicker(StoreScanTick * time.Second)
 	go func() {
@@ -269,7 +207,7 @@ func (tw *BasicTaskWorker) QueueDoomedTasks() error {
 			case <-tw.done:
 				ticker.Stop()
 				doomErr = nil
-				log.Printf("Finished %s Task queuer", state)
+				log.Printf("Finished %s Task Marker", state)
 				break doomer
 			case <-ticker.C:
 				jobs, err := tw.store.GetJobs(state)
@@ -278,104 +216,152 @@ func (tw *BasicTaskWorker) QueueDoomedTasks() error {
 					break doomer
 				}
 				for _, job := range jobs {
-					ctx, cancel := context.WithTimeout(
-						context.Background(), QueryMasterTimeout*time.Second)
-					mesosTasks, err := taurus.MesosTasks(ctx, tw.master, job.Id,
-						mesos.TaskState_TASK_RUNNING.Enum())
+					ctx, cancel := context.WithTimeout(context.Background(), QueryMasterTimeout*time.Second)
+					killedTasks, err := taurus.MesosTasks(ctx, tw.master, job.Id, mesos.TaskState_TASK_KILLED.Enum())
 					if err != nil {
-						log.Printf("Failed to read tasks for Job %s: %s", job.Id, err)
+						log.Printf("Failed to retrieve %s Tasks: %s", state.String(), err)
 						cancel()
 						continue
 					}
-					// Queue tasks for killing
-					for taskId, _ := range mesosTasks {
-						taskInfo := new(mesos.TaskInfo)
-						taskInfo.TaskId = mesosutil.NewTaskID(taskId)
-						task := &taurus.Task{
-							Info:  taskInfo,
-							JobId: job.Id,
-							State: taurus.Doomed,
-						}
-						log.Printf("Queueing task %s to %s queue", taskId, queue)
-						if err := tw.queue.Publish(queue, task); err != nil {
-							log.Printf("Failed to queue %s: %s", taskId, err)
-						}
-					}
-					// Delete Doomed Job tasks
-					tasks, err := tw.store.GetJobTasks(job.Id)
+					jobTasks, err := tw.store.GetJobTasks(job.Id)
 					if err != nil {
-						doomErr = fmt.Errorf("Failed to read tasks for Job %s: %s", job.Id, err)
+						doomErr = fmt.Errorf("Error reading %s Job tasks: %s", job.Id, err)
 						break doomer
 					}
-					for _, task := range tasks {
+
+					// Queue tasks for killing
+					for _, task := range jobTasks {
 						taskId := task.Info.TaskId.GetValue()
-						if err := tw.store.RemoveTask(taskId); err != nil {
-							if serr, ok := err.(*taurus.StoreError); ok {
-								if serr.Code != taurus.ErrNotFound {
-									doomErr = fmt.Errorf("Failed to remove %s task for job %s: %s",
-										taskId, job.Id, err)
-									break doomer
-								}
-							}
+						if _, ok := killedTasks[taskId]; ok {
+							log.Printf("Task %s already dead. Skipping", taskId)
 							continue
+						}
+						// TODO: transactional update if possible
+						doomedTask, err := tw.store.GetTask(taskId)
+						if err != nil {
+							doomErr = fmt.Errorf("Failed to read task %s: %s", taskId, err)
+							break doomer
+						}
+						doomedTask.State = taurus.Doomed
+						if err := tw.store.UpdateTask(doomedTask); err != nil {
+							doomErr = fmt.Errorf("Failed to update task %s: %s", taskId, err)
+							break doomer
 						}
 					}
 				}
 			}
 		}
 		errChan <- doomErr
-		log.Printf("%s Task queuer ticker stopped", state)
+		log.Printf("%s Task Marker ticker stopped", state)
 	}()
 
 	return <-errChan
 }
 
-func (tw *BasicTaskWorker) CleanDoomedTasks() error {
+func (tw *BasicTaskWorker) QueueDoomedTasks() error {
 	state := taurus.Doomed
+	queue := taurus.Doomed.String()
 	errChan := make(chan error)
 	ticker := time.NewTicker(StoreScanTick * time.Second)
 	go func() {
-		var cleanErr error
-	cleaner:
+		var qpErr error
+	queuer:
 		for {
 			select {
 			case <-tw.done:
 				ticker.Stop()
-				cleanErr = nil
-				log.Printf("Finished %s Task Cleaner", state)
-				break cleaner
+				qpErr = nil
+				log.Printf("Finishing %s Task queuer", state)
+				break queuer
 			case <-ticker.C:
 				tasks, err := tw.store.GetTasks(state)
 				if err != nil {
-					cleanErr = fmt.Errorf("Failed to read %s Tasks: %s", state, err)
-					break cleaner
+					qpErr = fmt.Errorf("Error reading %s Tasks: %s", state, err)
+					break queuer
 				}
 				for _, task := range tasks {
 					taskId := task.Info.TaskId.GetValue()
-					if err := tw.store.RemoveTask(taskId); err != nil {
-						if serr, ok := err.(*taurus.StoreError); ok {
-							if serr.Code != taurus.ErrNotFound {
-								cleanErr = fmt.Errorf("Failed to remove task %s: %s",
-									taskId, err)
-								break cleaner
-							}
-						}
+					log.Printf("Queueing task %s to %s queue", taskId, queue)
+					if err := tw.queue.Publish(queue, task); err != nil {
+						log.Printf("Failed to queue %s: %s", taskId, err)
 						continue
 					}
 				}
 			}
 		}
-		errChan <- cleanErr
-		log.Printf("%s Task Cleaner tick stopped", state)
+		errChan <- qpErr
+		log.Printf("%s tasks queuer ticker stopped", state)
 	}()
 
 	return <-errChan
 }
 
-func (tw *BasicTaskWorker) ReconcilePendingTasks() error {
+func (tw *BasicTaskWorker) KillDoomedTasks(driver scheduler.SchedulerDriver) error {
+	queue := taurus.Doomed.String()
+	errChan := make(chan error)
+	go func() {
+		var killErr error
+	killer:
+		for {
+			select {
+			case <-tw.done:
+				killErr = nil
+				log.Printf("Finishing %s Task killer", taurus.Doomed)
+				break killer
+			default:
+				var retryCount int
+				task, err := tw.doomed.ReadTask(QueueTimeout * time.Second)
+				if err != nil {
+					switch {
+					case tw.doomed.TimedOut(err):
+						log.Printf("No tasks to kill")
+					case tw.doomed.Closed(err):
+						killErr = nil
+						break
+					default:
+						retryCount += 1
+						log.Printf("Failed to read from %s queue: %s",
+							queue, err)
+
+					}
+					if retryCount == QueueRetry {
+						killErr = fmt.Errorf("Error reading %s queue: %s",
+							queue, err)
+						break killer
+					}
+					continue
+				}
+				state := mesos.TaskState_TASK_KILLED.Enum()
+				ctx, cancel := context.WithTimeout(context.Background(), QueryMasterTimeout*time.Second)
+				killedTasks, err := taurus.MesosTasks(ctx, tw.master, "", state)
+				if err != nil {
+					log.Printf("Failed to retrieve %s Tasks: %s", state.String(), err)
+					cancel()
+					continue
+				}
+				log.Printf("Killed tasks: %#v", killedTasks)
+				taskId := task.Info.TaskId
+				if _, ok := killedTasks[taskId.GetValue()]; ok {
+					log.Printf("Task %s already killed. Skipping.", taskId)
+					continue
+				}
+				killStatus, err := driver.KillTask(taskId)
+				if err != nil {
+					log.Printf("Mesos in state %s failed to kill the task %s: %s", killStatus, taskId.GetValue(), err)
+					continue
+				}
+			}
+		}
+		errChan <- killErr
+		log.Printf("Finished Doom Task killer")
+	}()
+
+	return <-errChan
+}
+
+func (tw *BasicTaskWorker) ReconcilePendingJobs() error {
 	oldState := taurus.Pending
 	newState := taurus.Scheduled
-	queue := taurus.Pending.String()
 	errChan := make(chan error)
 	ticker := time.NewTicker(ReconcileScanTick * time.Second)
 	go func() {
@@ -395,39 +381,21 @@ func (tw *BasicTaskWorker) ReconcilePendingTasks() error {
 					break reconciler
 				}
 				for _, job := range jobs {
-					ctx, cancel := context.WithTimeout(
-						context.Background(), QueryMasterTimeout*time.Second)
-					mesosTasks, err := taurus.MesosTasks(ctx, tw.master, job.Id, nil)
+					ctx, cancel := context.WithTimeout(context.Background(), QueryMasterTimeout*time.Second)
+					launchedTasks, err := taurus.MesosTasks(ctx, tw.master, job.Id, nil)
+					log.Printf("Launched tasks: %#v", launchedTasks)
 					if err != nil {
 						log.Printf("Failed to retrieve Tasks for Job %s: %s", job.Id, err)
 						cancel()
 						continue
 					}
-					launched := len(mesosTasks)
-					log.Printf("Launched tasks: %#v", mesosTasks)
-					if uint32(launched) == job.Task.Replicas {
+					if uint32(len(launchedTasks)) == job.Task.Replicas {
 						job.State = newState
 						if err := tw.store.UpdateJob(job); err != nil {
 							reconErr = fmt.Errorf("Failed to update job %s: %s", job.Id, err)
 							break reconciler
 						}
 						log.Printf("Job %s marked as %s", job.Id, newState)
-					} else {
-						tasks, err := tw.store.GetJobTasks(job.Id)
-						if err != nil {
-							reconErr = fmt.Errorf("Failed to read Tasks for Job %s: %s", job.Id, err)
-							break reconciler
-						}
-						for _, task := range tasks {
-							if task.State != newState {
-								taskId := task.Info.TaskId.GetValue()
-								log.Printf("Queueing task %s to %s queue", taskId, queue)
-								if err := tw.queue.Publish(queue, task); err != nil {
-									log.Printf("Failed to queue %s: %s", taskId, err)
-									continue
-								}
-							}
-						}
 					}
 				}
 			}
@@ -439,10 +407,9 @@ func (tw *BasicTaskWorker) ReconcilePendingTasks() error {
 	return <-errChan
 }
 
-func (tw *BasicTaskWorker) ReconcileDoomedTasks() error {
+func (tw *BasicTaskWorker) ReconcileDoomedJobs() error {
 	oldState := taurus.Doomed
 	newState := taurus.Dead
-	queue := taurus.Doomed.String()
 	errChan := make(chan error)
 	ticker := time.NewTicker(ReconcileScanTick * time.Second)
 	go func() {
@@ -462,40 +429,20 @@ func (tw *BasicTaskWorker) ReconcileDoomedTasks() error {
 					break reconciler
 				}
 				for _, job := range jobs {
-					ctx, cancel := context.WithTimeout(
-						context.Background(), QueryMasterTimeout*time.Second)
-					mesosTasks, err := taurus.MesosTasks(ctx, tw.master, job.Id,
-						mesos.TaskState_TASK_KILLED.Enum())
+					ctx, cancel := context.WithTimeout(context.Background(), QueryMasterTimeout*time.Second)
+					killedTasks, err := taurus.MesosTasks(ctx, tw.master, job.Id, mesos.TaskState_TASK_KILLED.Enum())
 					if err != nil {
 						log.Printf("Failed to retrieve Tasks for Job %s: %s", job.Id, err)
 						cancel()
 						continue
 					}
-					tasks, err := tw.store.GetJobTasks(job.Id)
-					if err != nil {
-						reconErr = fmt.Errorf("Failed to read Tasks for Job %s: %s", job.Id, err)
-						break reconciler
-					}
-					launched := len(mesosTasks)
-					if uint32(launched) == job.Task.Replicas {
+					if uint32(len(killedTasks)) == job.Task.Replicas {
 						job.State = newState
 						if err := tw.store.UpdateJob(job); err != nil {
 							reconErr = fmt.Errorf("Failed to update job %s: %s", job.Id, err)
 							break reconciler
 						}
 						log.Printf("Job %s marked as %s", job.Id, newState)
-					} else {
-						for _, task := range tasks {
-							// Only queue the ones in old state which have SlaveId populated
-							taskId := task.Info.TaskId.GetValue()
-							if task.State != newState && task.Info.SlaveId.GetValue() != "" {
-								log.Printf("Queueing task %s to %s queue", taskId, queue)
-								if err := tw.queue.Publish(queue, task); err != nil {
-									log.Printf("Failed to queue %s: %s", taskId, err)
-									continue
-								}
-							}
-						}
 					}
 				}
 			}
