@@ -6,31 +6,27 @@ type State int
 
 const (
 	// Taurus Job state
-	Pending State = iota + 1
-	Scheduled
-	Running
-	Doomed
-	Dead
-	Unknown
+	PENDING State = iota + 1
+	RUNNING
+	STOPPED
+	UNKNOWN
 	// Default Task resource allocations
+	// These values are used if Job submission
+	// does not contain any Task resource requirements
 	DEFAULT_CPUS_PER_TASK = 1
 	DEFAULT_MEM_PER_TASK  = 128
 )
 
 func (s State) String() string {
 	switch s {
-	case Pending:
-		return "Pending"
-	case Scheduled:
-		return "Scheduled"
-	case Running:
-		return "Running"
-	case Doomed:
-		return "Doomed"
-	case Dead:
-		return "Dead"
+	case PENDING:
+		return "PENDING"
+	case RUNNING:
+		return "RUNNING"
+	case STOPPED:
+		return "STOPPED"
 	default:
-		return "Unknown"
+		return "UNKNOWN"
 	}
 }
 
@@ -76,7 +72,7 @@ type JobTask struct {
 }
 
 // Job is a Taurus Framework Job
-// It can schedule multiple replicas of JobTask
+// It can schedule multiple replicas of the same JobTask
 type Job struct {
 	Id    string   `json:"id"`
 	Task  *JobTask `json:"task"`

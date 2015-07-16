@@ -18,14 +18,14 @@ const (
 type Scheduler struct {
 	Store   Store
 	Queue   TaskQueue
-	Worker  TaskWorker
+	Worker  JobWorker
 	Pending Subscription
 	master  string
 	errChan chan error
 }
 
-func NewScheduler(store Store, queue TaskQueue, worker TaskWorker, master string) (*Scheduler, error) {
-	pending, err := queue.Subscribe(Pending.String())
+func NewScheduler(store Store, queue TaskQueue, worker JobWorker, master string) (*Scheduler, error) {
+	pending, err := queue.Subscribe(PENDING.String())
 	if err != nil {
 		return nil, err
 	}
@@ -99,11 +99,11 @@ ReadOffers:
 				retryCount += 1
 				switch {
 				case sched.Pending.TimedOut(err):
-					log.Printf("No %s tasks available", Pending)
+					log.Printf("No %s tasks available", PENDING)
 				case sched.Pending.Closed(err):
 					break ReadTasks
 				default:
-					log.Printf("Failed to read from %s queue: %s", Pending, err)
+					log.Printf("Failed to read from %s queue: %s", PENDING, err)
 				}
 				if retryCount == QueueRetry {
 					break ReadTasks
@@ -115,15 +115,6 @@ ReadOffers:
 				// Don't add the same task twice into launchTasks slice
 				if launchTaskMap[taskId] {
 					log.Printf("Skipping already queued Task %s", taskId)
-					continue ReadTasks
-				}
-				storeTask, err := sched.Store.GetTask(taskId)
-				if err != nil {
-					sched.errChan <- fmt.Errorf("Failed to read task %s: %s", taskId, err)
-				}
-				if storeTask.State == Doomed {
-					log.Printf("Skipping %s task marked as doomed", storeTask.Info.TaskId.GetValue())
-					delete(launchTaskMap, taskId)
 					continue ReadTasks
 				}
 				taskCpu = ScalarResourceVal("cpus", task.Info.Resources)
@@ -150,24 +141,6 @@ ReadOffers:
 				log.Printf("Mesos status: %#v Failed to launch Tasks %s: %s", launchStatus, launchTasks, err)
 				continue ReadOffers
 			}
-			for _, launchTask := range launchTasks {
-				taskId := launchTask.TaskId.GetValue()
-				storeTask, err := sched.Store.GetTask(taskId)
-				if err != nil {
-					sched.errChan <- fmt.Errorf("Failed to read task %s: %s", taskId, err)
-				}
-				if storeTask.State != Doomed || storeTask.State != Running {
-					jobId := ParseJobId(taskId)
-					task := &Task{
-						Info:  launchTask,
-						JobId: jobId,
-						State: Scheduled,
-					}
-					if err := sched.Store.UpdateTask(task); err != nil {
-						sched.errChan <- fmt.Errorf("Failed to update task %s: %s", taskId, err)
-					}
-				}
-			}
 		} else {
 			log.Println("Declining offer ", offer.Id.GetValue())
 			declineStatus, err := driver.DeclineOffer(
@@ -184,24 +157,12 @@ func (sched *Scheduler) StatusUpdate(driver sched.SchedulerDriver, status *mesos
 	taskId := status.TaskId.GetValue()
 	taskStatus := status.GetState()
 	log.Println("Task", taskId, "is in state", taskStatus.String())
-	// Retrieve the task from DB
-	task, err := sched.Store.GetTask(taskId)
-	if err != nil {
-		sched.errChan <- fmt.Errorf("Failed to read task %s: %s", taskId, err)
-	}
 
 	switch taskStatus {
 	case mesos.TaskState_TASK_RUNNING:
-		task.State = Running
-		log.Printf("Marking task %s as %s", taskId, Running)
+		log.Printf("Marking task %s as %s", taskId, RUNNING)
 	case mesos.TaskState_TASK_KILLED, mesos.TaskState_TASK_FINISHED, mesos.TaskState_TASK_FAILED, mesos.TaskState_TASK_LOST:
-		log.Printf("Marking task %s as %s", taskId, Dead)
-		task.State = Dead
-	}
-
-	// Update the task in DB
-	if err := sched.Store.UpdateTask(task); err != nil {
-		sched.errChan <- fmt.Errorf("Failed to update task %s: %s", taskId, err)
+		log.Printf("Marking task %s as %s", taskId, STOPPED)
 	}
 }
 
