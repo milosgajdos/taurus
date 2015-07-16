@@ -30,7 +30,7 @@ type Config struct {
 	// Task Queue
 	Queue TaskQueue
 	// Task Worker
-	Worker TaskWorker
+	Worker JobWorker
 	// TLS configuration
 	TlsConfig *tls.Config
 }

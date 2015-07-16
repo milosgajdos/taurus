@@ -2,6 +2,11 @@ package taurus
 
 import "time"
 
+const (
+	DoomedQ  = "doomed"
+	PendingQ = "pending"
+)
+
 type Subscription interface {
 	ReadTask(time.Duration) (*Task, error)
 	AutoUnsubscribe(int) error

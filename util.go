@@ -7,10 +7,14 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"time"
 	"unsafe"
+
+	"code.google.com/p/go-uuid/uuid"
 
 	"golang.org/x/net/context"
 
+	"github.com/gogo/protobuf/proto"
 	mesos "github.com/mesos/mesos-go/mesosproto"
 	util "github.com/mesos/mesos-go/mesosutil"
 )
@@ -93,7 +97,7 @@ func MesosTasks(ctx context.Context, master, jobId string, state *mesos.TaskStat
 				continue
 			}
 			for _, task := range fw.Tasks {
-				if ParseJobId(task.Id) == jobId {
+				if jobId == "" || ParseJobId(task.Id) == jobId {
 					if state != nil {
 						if task.State == state.String() {
 							mesosTasks[task.Id] = task.SlaveId
@@ -138,4 +142,89 @@ func ScalarResourceVal(name string, resources []*mesos.Resource) float64 {
 		sum += res.GetScalar().GetValue()
 	}
 	return sum
+}
+
+func CreateMesosTaskInfo(jobId string, task *JobTask) *mesos.TaskInfo {
+	// TODO: Needs proper randomization
+	taskIdValue := fmt.Sprintf("%s-%s-%s-%d-%s",
+		jobId,
+		task.Role,
+		task.Environment,
+		time.Now().Unix(),
+		uuid.NewUUID())
+
+	taskId := &mesos.TaskID{
+		Value: proto.String(taskIdValue),
+	}
+
+	// Define ContainerInfo
+	container := &mesos.ContainerInfo{
+		Type: mesos.ContainerInfo_DOCKER.Enum(),
+		Docker: &mesos.ContainerInfo_DockerInfo{
+			Image:   proto.String(task.Container.Image),
+			Network: mesos.ContainerInfo_DockerInfo_BRIDGE.Enum(),
+		},
+	}
+
+	// Container Volumes
+	for _, v := range task.Container.Volumes {
+		var (
+			vv   = v
+			mode = mesos.Volume_RW.Enum()
+		)
+
+		if vv.Mode == "ro" {
+			mode = mesos.Volume_RO.Enum()
+		}
+
+		container.Volumes = append(container.Volumes, &mesos.Volume{
+			ContainerPath: &vv.ContainerPath,
+			HostPath:      &vv.HostPath,
+			Mode:          mode,
+		})
+	}
+
+	// Set Task resources
+	if task.Resources != nil {
+		if task.Resources.Cpu == 0.0 {
+			task.Resources.Cpu = DEFAULT_CPUS_PER_TASK
+		}
+
+		if task.Resources.Cpu == 0.0 {
+			task.Resources.Memory = DEFAULT_MEM_PER_TASK
+		}
+	} else {
+		task.Resources = &Resources{
+			Cpu:    DEFAULT_CPUS_PER_TASK,
+			Memory: DEFAULT_MEM_PER_TASK,
+		}
+	}
+
+	// *mesos.TaskInfo
+	taskInfo := &mesos.TaskInfo{
+		Name:   proto.String(fmt.Sprintf("taurus-task-%s", taskIdValue)),
+		TaskId: taskId,
+		Resources: []*mesos.Resource{
+			util.NewScalarResource("cpus", task.Resources.Cpu),
+			util.NewScalarResource("mem", task.Resources.Memory),
+		},
+		Command: &mesos.CommandInfo{
+			Shell: proto.Bool(false),
+		},
+		Container: container,
+		Data:      []byte(jobId),
+	}
+
+	//Set value only if provided
+	if len(task.Container.Command) == 1 {
+		if task.Container.Command[0] != "" {
+			taskInfo.Command.Value = &task.Container.Command[0]
+		}
+	}
+	// Set args only if they exist
+	if len(task.Container.Command) > 1 {
+		taskInfo.Command.Arguments = task.Container.Command[1:]
+	}
+
+	return taskInfo
 }

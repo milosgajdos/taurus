@@ -18,14 +18,14 @@ const (
 type Scheduler struct {
 	Store   Store
 	Queue   TaskQueue
-	Worker  TaskWorker
+	Worker  JobWorker
 	Pending Subscription
 	master  string
 	errChan chan error
 }
 
-func NewScheduler(store Store, queue TaskQueue, worker TaskWorker, master string) (*Scheduler, error) {
-	pending, err := queue.Subscribe(Pending.String())
+func NewScheduler(store Store, queue TaskQueue, worker JobWorker, master string) (*Scheduler, error) {
+	pending, err := queue.Subscribe(PendingQ)
 	if err != nil {
 		return nil, err
 	}
@@ -53,12 +53,12 @@ func (sched *Scheduler) Stop() {
 
 // These implement mesos.Scheduler interface
 func (sched *Scheduler) Registered(driver sched.SchedulerDriver, frameworkId *mesos.FrameworkID, masterInfo *mesos.MasterInfo) {
-	log.Println("Taurus Framework Registered with Master", masterInfo)
 	sched.master = MasterConnStr(masterInfo)
+	log.Println("Taurus Framework Registered with Master", sched.master)
 	// Start the scheduler worker
 	go func() {
 		log.Printf("Starting %s framework scheduler worker", FrameworkName)
-		sched.errChan <- sched.Worker.Run(driver, sched.master)
+		sched.errChan <- sched.Worker.Run(driver, masterInfo)
 	}()
 }
 
@@ -66,12 +66,12 @@ func (sched *Scheduler) Reregistered(driver sched.SchedulerDriver, masterInfo *m
 	//TODO: We must reconcile the Job Tasks here with what is in the store
 	// Stop scheduler worker
 	sched.Worker.Stop()
-	log.Println("Taurus Framework Re-Registered with Master", masterInfo)
 	sched.master = MasterConnStr(masterInfo)
+	log.Println("Taurus Framework Re-Registered with Master", sched.master)
 	// Restart scheduler worker
 	go func() {
 		log.Printf("Starting %s framework scheduler worker", FrameworkName)
-		sched.errChan <- sched.Worker.Run(driver, sched.master)
+		sched.errChan <- sched.Worker.Run(driver, masterInfo)
 	}()
 }
 
@@ -87,7 +87,7 @@ ReadOffers:
 
 		log.Println("Taurus Received Offer <", offer.Id.GetValue(), "> with cpus=", remainingCpus, " mem=", remainingMems)
 
-		// Mapp for each launch task batch
+		// Map to avoid launching duplicate tasks in the same batch slice
 		launchTaskMap := make(map[string]bool)
 		launchTasks := make([]*mesos.TaskInfo, 0, 0)
 		var taskCpu, taskMem float64
@@ -99,11 +99,11 @@ ReadOffers:
 				retryCount += 1
 				switch {
 				case sched.Pending.TimedOut(err):
-					log.Printf("No %s tasks available", Pending)
+					log.Printf("No %s tasks available", PENDING)
 				case sched.Pending.Closed(err):
 					break ReadTasks
 				default:
-					log.Printf("Failed to read from %s queue: %s", Pending, err)
+					log.Printf("Failed to read from %s queue: %s", PENDING, err)
 				}
 				if retryCount == QueueRetry {
 					break ReadTasks
@@ -112,23 +112,10 @@ ReadOffers:
 			}
 			if task != nil {
 				taskId := task.Info.TaskId.GetValue()
-				// Don't add the same task twice intu launchTasks slice
+				// Don't add the same task twice into launchTasks slice
 				if launchTaskMap[taskId] {
 					log.Printf("Skipping already queued Task %s", taskId)
 					continue ReadTasks
-				}
-				storeTask, err := sched.Store.GetTask(taskId)
-				if err != nil {
-					if serr, ok := err.(*StoreError); ok {
-						if serr.Code != ErrNotFound {
-							sched.errChan <- fmt.Errorf("Failed to read task %s: %s",
-								taskId, err)
-						}
-					}
-				}
-				if storeTask.State == Doomed {
-					log.Printf("Skipping %s task marked as doomed", storeTask.Info.TaskId.GetValue())
-					break ReadTasks
 				}
 				taskCpu = ScalarResourceVal("cpus", task.Info.Resources)
 				taskMem = ScalarResourceVal("mem", task.Info.Resources)
@@ -145,44 +132,14 @@ ReadOffers:
 		}
 
 		if len(launchTasks) > 0 {
-			log.Printf("Launching %d tasks for offer %s",
-				len(launchTasks), offer.Id.GetValue())
+			log.Printf("Launching %d tasks for offer %s", len(launchTasks), offer.Id.GetValue())
 			launchStatus, err := driver.LaunchTasks(
 				[]*mesos.OfferID{offer.Id},
 				launchTasks,
 				&mesos.Filters{RefuseSeconds: proto.Float64(1)})
 			if err != nil {
-				log.Printf("Mesos status: %#v Failed to launch Tasks %s: %s",
-					launchStatus, launchTasks, err)
+				log.Printf("Mesos status: %#v Failed to launch Tasks %s: %s", launchStatus, launchTasks, err)
 				continue ReadOffers
-			}
-			for _, launchTask := range launchTasks {
-				taskId := launchTask.TaskId.GetValue()
-				storeTask, err := sched.Store.GetTask(taskId)
-				if err != nil {
-					if serr, ok := err.(*StoreError); ok {
-						if serr.Code != ErrNotFound {
-							sched.errChan <- fmt.Errorf("Failed to read task %s: %s",
-								taskId, err)
-						}
-					}
-				}
-				if storeTask.State != Doomed {
-					jobId := ParseJobId(taskId)
-					task := &Task{
-						Info:  launchTask,
-						JobId: jobId,
-						State: Scheduled,
-					}
-					if err := sched.Store.UpdateTask(task); err != nil {
-						if serr, ok := err.(*StoreError); ok {
-							if serr.Code != ErrNotFound {
-								sched.errChan <- fmt.Errorf("Failed to update task %s: %s",
-									taskId, err)
-							}
-						}
-					}
-				}
 			}
 		} else {
 			log.Println("Declining offer ", offer.Id.GetValue())
@@ -190,15 +147,23 @@ ReadOffers:
 				offer.Id,
 				&mesos.Filters{RefuseSeconds: proto.Float64(1)})
 			if err != nil {
-				log.Printf("Error declining offer for mesos status %#v: %s",
-					declineStatus, err)
+				log.Printf("Error declining offer for mesos status %#v: %s", declineStatus, err)
 			}
 		}
 	}
 }
 
 func (sched *Scheduler) StatusUpdate(driver sched.SchedulerDriver, status *mesos.TaskStatus) {
-	log.Println("Task", status.TaskId.GetValue(), "is in state", status.State.Enum().String())
+	taskId := status.TaskId.GetValue()
+	taskStatus := status.GetState()
+	log.Println("Task", taskId, "is in state", taskStatus.String())
+
+	switch taskStatus {
+	case mesos.TaskState_TASK_RUNNING:
+		log.Printf("Marking task %s as %s", taskId, RUNNING)
+	case mesos.TaskState_TASK_KILLED, mesos.TaskState_TASK_FINISHED, mesos.TaskState_TASK_FAILED, mesos.TaskState_TASK_LOST:
+		log.Printf("Marking task %s as %s", taskId, STOPPED)
+	}
 }
 
 func (sched *Scheduler) OfferRescinded(sched.SchedulerDriver, *mesos.OfferID) {}

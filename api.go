@@ -99,7 +99,7 @@ func startJob(c *Context, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job.State = Pending
+	job.State = PENDING
 	log.Printf("Submitting Job %s", job.Id)
 	err = c.store.AddJob(&job)
 	if err != nil {
@@ -144,7 +144,7 @@ func delJob(c *Context, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job.State = Doomed
+	job.State = STOPPED
 	log.Printf("Killing Job %s", job.Id)
 	if err := c.store.UpdateJob(job); err != nil {
 		log.Printf("Could not update job %s: %s", jobId, err)
