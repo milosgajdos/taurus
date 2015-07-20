@@ -17,10 +17,10 @@ type Store interface {
 	RemoveJob(string) error
 	// GetJob Retrieve a Taurus job from the store
 	GetJob(string) (*Job, error)
-	// GetJobs Retrieve all Taurus Jobs in a given Job state
-	GetJobs(State) ([]*Job, error)
 	// UpdateJob UpdateJob Taurus Job in the store
 	UpdateJob(*Job) error
+	// GetJobs Retrieve all Taurus Jobs in a given Job state
+	GetJobs(State) ([]*Job, error)
 	// GetAllJobs Retrieve all Taurus Jobs from the store
 	GetAllJobs() ([]*Job, error)
 }
