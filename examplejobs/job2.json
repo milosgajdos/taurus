@@ -1,16 +1,18 @@
 {
-        "id" : "taurusjob2",
-        "task" : {
-                "cluster" : "MyCluster",
-                "environment" : "prod",
-                "role" : "web",
-                "container" : {
-                        "image" : "nginx"
-                },
-                "resources" : {
-                        "cpu" : 2.0,
-                        "memory" : 128
-                },
-                "replicas" : 4
+    "id": "taurusjob2",
+    "tasks": [
+        {
+            "cluster": "MyCluster",
+            "environment": "prod",
+            "role": "web",
+            "container": {
+                "image": "nginx"
+            },
+            "resources": {
+                "cpu": 2,
+                "memory": 128
+            },
+            "replicas": 4
         }
+    ]
 }

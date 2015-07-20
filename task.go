@@ -74,9 +74,9 @@ type JobTask struct {
 // Job is a Taurus Framework Job
 // It can schedule multiple replicas of the same JobTask
 type Job struct {
-	Id    string   `json:"id"`
-	Task  *JobTask `json:"task"`
-	State State    `json:"job_state"`
+	Id    string     `json:"id"`
+	Tasks []*JobTask `json:"tasks"`
+	State State      `json:"job_state"`
 }
 
 // Task is an instance of JobTask
