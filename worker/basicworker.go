@@ -110,17 +110,19 @@ func (tw *BasicTaskWorker) QueuePendingTasks() error {
 						cancel()
 						continue
 					}
-					for i := uint32(0); i < job.Task.Replicas-uint32(len(launchedTasks)); i++ {
-						taskInfo := taurus.CreateMesosTaskInfo(job.Id, job.Task)
-						task := &taurus.Task{
-							Info:  taskInfo,
-							JobId: job.Id,
-						}
-						taskId := taskInfo.TaskId.GetValue()
-						log.Printf("Queueing task: %s", taskId)
-						if err := tw.queue.Publish(queue, task); err != nil {
-							log.Printf("Failed to queue %s: %s", taskId, err)
-							continue
+					for _, jobTask := range job.Tasks {
+						for i := uint32(0); i < jobTask.Replicas-uint32(len(launchedTasks)); i++ {
+							taskInfo := taurus.CreateMesosTaskInfo(job.Id, jobTask)
+							task := &taurus.Task{
+								Info:  taskInfo,
+								JobId: job.Id,
+							}
+							taskId := taskInfo.TaskId.GetValue()
+							log.Printf("Queueing task: %s", taskId)
+							if err := tw.queue.Publish(queue, task); err != nil {
+								log.Printf("Failed to queue %s: %s", taskId, err)
+								continue
+							}
 						}
 					}
 				}
@@ -165,7 +167,11 @@ func (tw *BasicTaskWorker) ReconcilePendingJobs() error {
 						cancel()
 						continue
 					}
-					if uint32(len(launchedTasks)) == job.Task.Replicas {
+					jobTaskCount := uint32(0)
+					for _, jobTask := range job.Tasks {
+						jobTaskCount += jobTask.Replicas
+					}
+					if uint32(len(launchedTasks)) == jobTaskCount {
 						job.State = newState
 						if err := tw.store.UpdateJob(job); err != nil {
 							reconErr = fmt.Errorf("Failed to update job %s: %s", job.Id, err)
@@ -262,7 +268,11 @@ func (tw *BasicTaskWorker) ReconcileSoppedJobs() error {
 						cancel()
 						continue
 					}
-					if uint32(len(killedTasks)) == job.Task.Replicas {
+					jobTaskCount := uint32(0)
+					for _, jobTask := range job.Tasks {
+						jobTaskCount += jobTask.Replicas
+					}
+					if uint32(len(killedTasks)) == jobTaskCount {
 						job.State = newState
 						if err := tw.store.UpdateJob(job); err != nil {
 							reconErr = fmt.Errorf("Failed to update job %s: %s", job.Id, err)

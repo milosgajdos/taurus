@@ -101,6 +101,7 @@ func startJob(c *Context, w http.ResponseWriter, r *http.Request) {
 
 	job.State = PENDING
 	log.Printf("Submitting Job %s", job.Id)
+	//log.Printf("Submitting Job %#v", job)
 	err = c.store.AddJob(&job)
 	if err != nil {
 		if serr, ok := err.(*StoreError); ok {
