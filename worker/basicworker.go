@@ -8,6 +8,7 @@ import (
 
 	"golang.org/x/net/context"
 
+	"github.com/gogo/protobuf/proto"
 	mesos "github.com/mesos/mesos-go/mesosproto"
 	"github.com/mesos/mesos-go/mesosutil"
 	"github.com/mesos/mesos-go/scheduler"
@@ -23,25 +24,32 @@ const (
 )
 
 type BasicTaskWorker struct {
-	store  taurus.Store
-	queue  taurus.TaskQueue
-	master string
-	done   chan struct{}
-	wg     sync.WaitGroup
+	store   taurus.Store
+	queue   taurus.TaskQueue
+	pending taurus.Subscription
+	master  string
+	done    chan struct{}
+	wg      sync.WaitGroup
 }
 
 func NewBasicTaskWorker(store taurus.Store, queue taurus.TaskQueue) (*BasicTaskWorker, error) {
+	pending, err := queue.Subscribe(taurus.PendingQ)
+	if err != nil {
+		return nil, err
+	}
+
 	done := make(chan struct{})
 	return &BasicTaskWorker{
-		store: store,
-		queue: queue,
-		done:  done,
+		store:   store,
+		queue:   queue,
+		pending: pending,
+		done:    done,
 	}, nil
 }
 
 // Run starts several BasicWorker goroutines
 // It blocks waiting to receive an error if any of the workers goroutines fail
-func (tw *BasicTaskWorker) Run(driver scheduler.SchedulerDriver, masterInfo *mesos.MasterInfo) error {
+func (tw *BasicTaskWorker) Start(driver scheduler.SchedulerDriver, masterInfo *mesos.MasterInfo) error {
 	tw.master = taurus.MasterConnStr(masterInfo)
 	errChan := make(chan error, 3)
 
@@ -68,6 +76,80 @@ func (tw *BasicTaskWorker) Run(driver scheduler.SchedulerDriver, masterInfo *mes
 	}()
 
 	return <-errChan
+}
+
+func (tw *BasicTaskWorker) Schedule(driver scheduler.SchedulerDriver, offers []*mesos.Offer) {
+ReadOffers:
+	for _, offer := range offers {
+		remainingCpus := taurus.ScalarResourceVal("cpus", offer.Resources)
+		remainingMems := taurus.ScalarResourceVal("mem", offer.Resources)
+
+		log.Println("Taurus Received Offer <", offer.Id.GetValue(), "> with cpus=", remainingCpus, " mem=", remainingMems)
+
+		// Map to avoid launching duplicate tasks in the same batch slice
+		launchTaskMap := make(map[string]bool)
+		launchTasks := make([]*mesos.TaskInfo, 0, 0)
+		var taskCpu, taskMem float64
+		var retryCount int
+	ReadTasks:
+		for {
+			task, err := tw.pending.ReadTask(QueueTimeout * time.Second)
+			if err != nil {
+				retryCount += 1
+				switch {
+				case tw.pending.TimedOut(err):
+					log.Printf("No %s tasks available", taurus.PENDING)
+				case tw.pending.Closed(err):
+					break ReadTasks
+				default:
+					log.Printf("Failed to read from %s queue: %s", taurus.PENDING, err)
+				}
+				if retryCount == QueueRetry {
+					break ReadTasks
+				}
+				continue ReadTasks
+			}
+			if task != nil {
+				taskId := task.Info.TaskId.GetValue()
+				// Don't add the same task twice into launchTasks slice
+				if launchTaskMap[taskId] {
+					log.Printf("Skipping already queued Task %s", taskId)
+					continue ReadTasks
+				}
+				taskCpu = taurus.ScalarResourceVal("cpus", task.Info.Resources)
+				taskMem = taurus.ScalarResourceVal("mem", task.Info.Resources)
+				if remainingCpus >= taskCpu && remainingMems >= taskMem {
+					task.Info.SlaveId = offer.SlaveId
+					launchTasks = append(launchTasks, task.Info)
+					launchTaskMap[taskId] = true
+					remainingCpus -= taskCpu
+					remainingMems -= taskMem
+				} else {
+					break ReadTasks
+				}
+			}
+		}
+
+		if len(launchTasks) > 0 {
+			log.Printf("Launching %d tasks for offer %s", len(launchTasks), offer.Id.GetValue())
+			launchStatus, err := driver.LaunchTasks(
+				[]*mesos.OfferID{offer.Id},
+				launchTasks,
+				&mesos.Filters{RefuseSeconds: proto.Float64(1)})
+			if err != nil {
+				log.Printf("Mesos status: %#v Failed to launch Tasks %s: %s", launchStatus, launchTasks, err)
+				continue ReadOffers
+			}
+		} else {
+			log.Println("Declining offer ", offer.Id.GetValue())
+			declineStatus, err := driver.DeclineOffer(
+				offer.Id,
+				&mesos.Filters{RefuseSeconds: proto.Float64(1)})
+			if err != nil {
+				log.Printf("Error declining offer for mesos status %#v: %s", declineStatus, err)
+			}
+		}
+	}
 }
 
 // Stop stops all BasicWorker goroutines
