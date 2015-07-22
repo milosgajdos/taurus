@@ -10,11 +10,18 @@ import (
 	"github.com/steveyen/gkvlite"
 )
 
+// BasicStore provides a basic implementation of taurus.Store interface
+// BasicStore is a flat file DB store that leverages gkvlite.Store as its low level storage
+// BasicStore is thread safe
 type BasicStore struct {
 	store *gkvlite.Store
 	mu    sync.RWMutex
 }
 
+// NewBasicStore initializes BasicStore and creates Jobs collection
+//
+// It initializes data storage to a path passed in as an argument
+// It returns an error if the store could not be initialized or creation of jobs collection failed
 func NewBasicStore(fileName string) (*BasicStore, error) {
 	file, err := os.OpenFile(fileName, os.O_RDWR|os.O_CREATE, 0600)
 	if err != nil {
@@ -69,7 +76,6 @@ func (bs *BasicStore) withRecordContext(id string, col *gkvlite.Collection, fn f
 	return fn(record)
 }
 
-// jobExists checks if an item with a given key is already present in given collection
 func colItemExists(key string, col *gkvlite.Collection) bool {
 	exists := false
 	col.VisitItemsAscend([]byte(""), true, func(i *gkvlite.Item) bool {
@@ -82,7 +88,10 @@ func colItemExists(key string, col *gkvlite.Collection) bool {
 	return exists
 }
 
-// AddJob() stores Taurus Job as JSON blob in Taurus store
+// AddJob stores taurus.Job in the store
+//
+// If the new taurus.Job does not exist in the store, it is stored in the storage as JSON encoded blob.
+// AddJob returns error if either JSON encoding fails, the new job could not be stored or if there already is a taurus.Job with the same job.Id as the new taurus.Job
 func (bs *BasicStore) AddJob(job *taurus.Job) error {
 	return bs.withMutexContext("rw", func() error {
 		return bs.withColContext("jobs", func(col *gkvlite.Collection) error {
@@ -104,7 +113,9 @@ func (bs *BasicStore) AddJob(job *taurus.Job) error {
 	})
 }
 
-// RemoveJob() removes Taurus JOb from Taurus store
+// RemoveJob removes taurus.Job from the store
+//
+// RemoveJob returns error if the taurus.Job fails to be removed or the requested taurus.Job could not be found in the store
 func (bs *BasicStore) RemoveJob(jobId string) error {
 	return bs.withMutexContext("rw", func() error {
 		return bs.withColContext("jobs", func(col *gkvlite.Collection) error {
@@ -123,7 +134,9 @@ func (bs *BasicStore) RemoveJob(jobId string) error {
 	})
 }
 
-// UpdateJob() updates an existing Taurus Job
+// UpdateJob updates an existing taurus.Job in the store
+//
+// UpdateJob returns error if the taurus.Job update fails. This can be either due to failed JSON decoding of the retrieved data blob, or if the requested tarusu.Job does not exist or if the low level storage fails
 func (bs *BasicStore) UpdateJob(job *taurus.Job) error {
 	return bs.withMutexContext("rw", func() error {
 		return bs.withColContext("jobs", func(col *gkvlite.Collection) error {
@@ -146,7 +159,10 @@ func (bs *BasicStore) UpdateJob(job *taurus.Job) error {
 	})
 }
 
-// GetJob() retrieves Taurus Job from Taurus store
+// GetJob retrieves taurus.Job from the store
+//
+// GetJob returns a pointer to taurus.Job if the Job retrieval succeeded
+// GetJob returns error if the taurus.Job retrieval fails. This can be due to failed JSON decoding of retrieved data blob or if the requested taurus.Job could not be found in the store
 func (bs *BasicStore) GetJob(jobId string) (*taurus.Job, error) {
 	job := new(taurus.Job)
 	err := bs.withMutexContext("r", func() error {
@@ -171,8 +187,11 @@ func (bs *BasicStore) GetJob(jobId string) (*taurus.Job, error) {
 	return job, err
 }
 
-// Jobs() returns a slice of all Taurus Jobs
-func (bs *BasicStore) GetAllJobs() ([]*taurus.Job, error) {
+// GetJobs retrieves all taurus.Jobs stored in the store in a given taurus.State
+//
+// GetJobs returns a slice of pointers to taurus.Job if the Job retrieval succeeded
+// GetJobs returns error if either the retrieval fails, or due to failed JSON decoding of retrieved data blobs or due to a failure of low level storage
+func (bs *BasicStore) GetJobs(state taurus.State) ([]*taurus.Job, error) {
 	jobs := make([]*taurus.Job, 0, 0)
 	err := bs.withMutexContext("r", func() error {
 		return bs.withColContext("jobs", func(col *gkvlite.Collection) error {
@@ -186,7 +205,9 @@ func (bs *BasicStore) GetAllJobs() ([]*taurus.Job, error) {
 							Err:  err,
 						}
 					}
-					jobs = append(jobs, job)
+					if job.State == state {
+						jobs = append(jobs, job)
+					}
 					return nil
 				})
 
@@ -206,8 +227,11 @@ func (bs *BasicStore) GetAllJobs() ([]*taurus.Job, error) {
 	return jobs, nil
 }
 
-// Jobs() retrieves NEW Taurus Job from Taurus store
-func (bs *BasicStore) GetJobs(state taurus.State) ([]*taurus.Job, error) {
+// GetAllJobs retrieves all taurus.Jobs stored in the store
+//
+// GetAllJobs returns a slice of pointers to taurus.Job if the Job retrieval succeeded
+// GetAllJobs returns error if either the retrieval fails, or due to failed JSON decoding of retrieved data blobs or due to a failure of low level storage
+func (bs *BasicStore) GetAllJobs() ([]*taurus.Job, error) {
 	jobs := make([]*taurus.Job, 0, 0)
 	err := bs.withMutexContext("r", func() error {
 		return bs.withColContext("jobs", func(col *gkvlite.Collection) error {
@@ -221,9 +245,7 @@ func (bs *BasicStore) GetJobs(state taurus.State) ([]*taurus.Job, error) {
 							Err:  err,
 						}
 					}
-					if job.State == state {
-						jobs = append(jobs, job)
-					}
+					jobs = append(jobs, job)
 					return nil
 				})
 

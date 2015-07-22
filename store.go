@@ -10,23 +10,27 @@ const (
 	ErrNotFound
 )
 
+// Store is a generic Job store
 type Store interface {
-	// AddJob Adds a New Taurus Job to the store
+	// AddJob adds a new Job to the store
 	AddJob(*Job) error
-	// RemoveJob Removes a Taurus Job from the store
+	// RemoveJob removes an existing Job from the store
 	RemoveJob(string) error
-	// GetJob Retrieve a Taurus job from the store
-	GetJob(string) (*Job, error)
-	// UpdateJob UpdateJob Taurus Job in the store
+	// UpdateJob updates an existing Job in the store
 	UpdateJob(*Job) error
-	// GetJobs Retrieve all Taurus Jobs in a given Job state
+	// GetJob retrieves an existing Job from the store
+	GetJob(string) (*Job, error)
+	// GetJobs retrieves all Jobs in a given state
 	GetJobs(State) ([]*Job, error)
-	// GetAllJobs Retrieve all Taurus Jobs from the store
+	// GetAllJobs retrieves all Jobs from the store
 	GetAllJobs() ([]*Job, error)
 }
 
+// ErrorCode defines Store operation error code
+// ErrorCode implements fmt.Stringer interface
 type ErrorCode int
 
+// String method implementation to satisfy fmt.Stringer interface
 func (ec ErrorCode) String() string {
 	switch ec {
 	case ErrFailedRead:
@@ -44,11 +48,14 @@ func (ec ErrorCode) String() string {
 	}
 }
 
+// StoreError encapsulates store ErrorCode and adds an actual error statement
+// StoreError implements builtin.error interface
 type StoreError struct {
 	Code ErrorCode
 	Err  error
 }
 
+// Error method implementation to satisfy builtin.error interface
 func (se *StoreError) Error() string {
 	s := se.Code.String()
 	if se.Err != nil {
