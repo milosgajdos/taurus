@@ -16,14 +16,22 @@ import (
 )
 
 const (
-	QueueTimeout       = 1
-	QueueRetry         = 5
-	StoreScanTick      = 3
-	ReconcileScanTick  = 5
-	QueryMasterTimeout = 2
+	PendingQ = "pending"
 )
 
-type BasicTaskWorker struct {
+const (
+	QueueTimeout      = 1 * time.Second
+	MasterTimeout     = 2 * time.Second
+	StoreScanTick     = 3 * time.Second
+	ReconcileScanTick = 5 * time.Second
+	QueueRetry        = 5
+)
+
+// BasicWorker provides a basic implementation of taurus.Worker interface
+//
+// BasickWorker does all the Job management heavy lifting.
+// It starts and manages multiple goroutines responsible for monitoring Job states, queueing, launching and killing Job Tasks using Mesos.
+type BasicWorker struct {
 	store   taurus.Store
 	queue   taurus.TaskQueue
 	pending taurus.Subscription
@@ -32,14 +40,17 @@ type BasicTaskWorker struct {
 	wg      sync.WaitGroup
 }
 
-func NewBasicTaskWorker(store taurus.Store, queue taurus.TaskQueue) (*BasicTaskWorker, error) {
-	pending, err := queue.Subscribe(taurus.PendingQ)
+// NewBasicWorker initializes BasicWorker
+//
+// It returns error if the BasicWorker could not be initialized. This can be due to issues with TaskQueue or Store
+func NewBasicWorker(store taurus.Store, queue taurus.TaskQueue) (*BasicWorker, error) {
+	pending, err := queue.Subscribe(PendingQ)
 	if err != nil {
 		return nil, err
 	}
 
 	done := make(chan struct{})
-	return &BasicTaskWorker{
+	return &BasicWorker{
 		store:   store,
 		queue:   queue,
 		pending: pending,
@@ -47,38 +58,43 @@ func NewBasicTaskWorker(store taurus.Store, queue taurus.TaskQueue) (*BasicTaskW
 	}, nil
 }
 
-// Run starts several BasicWorker goroutines
-// It blocks waiting to receive an error if any of the workers goroutines fail
-func (tw *BasicTaskWorker) Start(driver scheduler.SchedulerDriver, masterInfo *mesos.MasterInfo) error {
-	tw.master = taurus.MasterConnStr(masterInfo)
+// Start starts several BasicWorker goroutines responsible for launching and killing the Tasks
+//
+// Start blocks waiting to receive an error if any of the Worker goroutines fails with error
+func (bw *BasicWorker) Start(driver scheduler.SchedulerDriver, masterInfo *mesos.MasterInfo) error {
+	bw.master = taurus.MasterConnStr(masterInfo)
 	errChan := make(chan error, 3)
 
 	// Start worker goroutines
-	tw.wg.Add(1)
+	bw.wg.Add(1)
 	go func() {
 		log.Printf("Starting Pending Task queuer")
-		defer tw.wg.Done()
-		errChan <- tw.QueuePendingTasks()
+		defer bw.wg.Done()
+		errChan <- bw.QueuePendingTasks()
 	}()
 
-	tw.wg.Add(1)
+	bw.wg.Add(1)
 	go func() {
-		log.Printf("Starting Pending Task reconciler")
-		defer tw.wg.Done()
-		errChan <- tw.ReconcilePendingJobs()
+		log.Printf("Starting Pending Jobs reconciler")
+		defer bw.wg.Done()
+		errChan <- bw.ReconcilePendingJobs()
 	}()
 
-	tw.wg.Add(1)
+	bw.wg.Add(1)
 	go func() {
 		log.Printf("Starting Task Killer")
-		defer tw.wg.Done()
-		errChan <- tw.KillJobTasks(driver)
+		defer bw.wg.Done()
+		errChan <- bw.KillJobTasks(driver)
 	}()
 
 	return <-errChan
 }
 
-func (tw *BasicTaskWorker) Schedule(driver scheduler.SchedulerDriver, offers []*mesos.Offer) {
+// Schedule handles Mesos resource offers and based on the received offers launches PENDING Tasks
+//
+// It monitors PENDING Tasks Queue and tries to launch as many Tasks as possible for a single offer.
+// If no PENDING Tasks are available within QueueTimeout interval it declines the offer and retries Queue read again
+func (bw *BasicWorker) ScheduleTasks(driver scheduler.SchedulerDriver, offers []*mesos.Offer) {
 ReadOffers:
 	for _, offer := range offers {
 		remainingCpus := taurus.ScalarResourceVal("cpus", offer.Resources)
@@ -93,13 +109,13 @@ ReadOffers:
 		var retryCount int
 	ReadTasks:
 		for {
-			task, err := tw.pending.ReadTask(QueueTimeout * time.Second)
+			task, err := bw.pending.ReadTask(QueueTimeout)
 			if err != nil {
 				retryCount += 1
 				switch {
-				case tw.pending.TimedOut(err):
+				case bw.pending.TimedOut(err):
 					log.Printf("No %s tasks available", taurus.PENDING)
-				case tw.pending.Closed(err):
+				case bw.pending.Closed(err):
 					break ReadTasks
 				default:
 					log.Printf("Failed to read from %s queue: %s", taurus.PENDING, err)
@@ -111,7 +127,7 @@ ReadOffers:
 			}
 			if task != nil {
 				taskId := task.Info.TaskId.GetValue()
-				// Don't add the same task twice into launchTasks slice
+				// Don't add the same task bwice into launchTasks slice
 				if launchTaskMap[taskId] {
 					log.Printf("Skipping already queued Task %s", taskId)
 					continue ReadTasks
@@ -152,40 +168,61 @@ ReadOffers:
 	}
 }
 
+// StatusUpdate handles status updates messages received from Mesos master
+//
+// Currently this method only logs status updates. This might change in the future
+func (bw *BasicWorker) StatusUpdate(driver scheduler.SchedulerDriver, status *mesos.TaskStatus) {
+	taskId := status.TaskId.GetValue()
+	taskStatus := status.GetState()
+	log.Println("Task", taskId, "is in state", taskStatus.String())
+
+	switch taskStatus {
+	case mesos.TaskState_TASK_RUNNING:
+		log.Printf("Marking task %s as %s", taskId, taurus.RUNNING)
+	case mesos.TaskState_TASK_KILLED, mesos.TaskState_TASK_FINISHED,
+		mesos.TaskState_TASK_FAILED, mesos.TaskState_TASK_LOST:
+		log.Printf("Marking task %s as %s", taskId, taurus.STOPPED)
+	}
+}
+
 // Stop stops all BasicWorker goroutines
-// It waits for all worker goroutines to stopand then returns
-func (tw *BasicTaskWorker) Stop() {
-	close(tw.done)
-	tw.wg.Wait()
+//
+// Stop waits for all worker goroutines to cleanly stop and then returns
+func (bw *BasicWorker) Stop() {
+	bw.queue.Close()
+	close(bw.done)
+	bw.wg.Wait()
 	return
 }
 
-// QueuePendingTasks watches for PENDING tasks in Taurus store
-// and queues them into Scheduler's queue for launch
-func (tw *BasicTaskWorker) QueuePendingTasks() error {
+// QueuePendingTasks watches PENDING Job Store, generates appropriate Tasks and queues them into Pending Tasks queue
+//
+// QueuePendingTasks runs in a separate goroutine started in Worker.Start call
+// It returns error if it can't read Job Store or if the goroutine it's running in has been stopped.
+func (bw *BasicWorker) QueuePendingTasks() error {
 	state := taurus.PENDING
-	queue := taurus.PendingQ
+	queue := PendingQ
 	errChan := make(chan error)
-	ticker := time.NewTicker(StoreScanTick * time.Second)
+	ticker := time.NewTicker(StoreScanTick)
 	go func() {
 		var qpErr error
 	queuer:
 		for {
 			select {
-			case <-tw.done:
+			case <-bw.done:
 				ticker.Stop()
 				qpErr = nil
 				log.Printf("Finishing %s Task queuer", state)
 				break queuer
 			case <-ticker.C:
-				jobs, err := tw.store.GetJobs(state)
+				jobs, err := bw.store.GetJobs(state)
 				if err != nil {
 					qpErr = fmt.Errorf("Error reading new Jobs: %s", err)
 					break queuer
 				}
 				for _, job := range jobs {
-					ctx, cancel := context.WithTimeout(context.Background(), QueryMasterTimeout*time.Second)
-					launchedTasks, err := taurus.MesosTasks(ctx, tw.master, job.Id, nil)
+					ctx, cancel := context.WithTimeout(context.Background(), MasterTimeout)
+					launchedTasks, err := taurus.MesosTasks(ctx, bw.master, job.Id, nil)
 					log.Printf("Job %s has %d launched tasks", job.Id, len(launchedTasks))
 					if err != nil {
 						log.Printf("Failed to retrieve Tasks for Job %s: %s", job.Id, err)
@@ -201,7 +238,7 @@ func (tw *BasicTaskWorker) QueuePendingTasks() error {
 							}
 							taskId := taskInfo.TaskId.GetValue()
 							log.Printf("Queueing task: %s", taskId)
-							if err := tw.queue.Publish(queue, task); err != nil {
+							if err := bw.queue.Publish(queue, task); err != nil {
 								log.Printf("Failed to queue %s: %s", taskId, err)
 								continue
 							}
@@ -217,33 +254,36 @@ func (tw *BasicTaskWorker) QueuePendingTasks() error {
 	return <-errChan
 }
 
-// ReconcilePendingJobs monitors launched Taurus Tasks for each PENDING Job
-// If all required Tasks have been launched, the Taurus Job is marked as RUNNING
-func (tw *BasicTaskWorker) ReconcilePendingJobs() error {
+// ReconcilePendingJobs monitors launched Tasks of each PENDING Job and marks the Job as RUNNING
+// if all of the Job tasks have been attempted to launch
+//
+// ReconcilePendingJobs runs in a separate goroutine started in Worker.Start call
+// It returns error if it can't read the Job Store or the gourine it is running in has been stopped
+func (bw *BasicWorker) ReconcilePendingJobs() error {
 	oldState := taurus.PENDING
 	newState := taurus.RUNNING
 	errChan := make(chan error)
-	ticker := time.NewTicker(ReconcileScanTick * time.Second)
+	ticker := time.NewTicker(ReconcileScanTick)
 	go func() {
 		var reconErr error
 	reconciler:
 		for {
 			select {
-			case <-tw.done:
+			case <-bw.done:
 				log.Printf("Finished %s Reconciler", oldState)
 				ticker.Stop()
 				reconErr = nil
 				break reconciler
 			case <-ticker.C:
-				jobs, err := tw.store.GetJobs(oldState)
+				jobs, err := bw.store.GetJobs(oldState)
 				if err != nil {
 					reconErr = fmt.Errorf("Error reading %s Jobs: %s", oldState, err)
 					break reconciler
 				}
 				for _, job := range jobs {
-					ctx, cancel := context.WithTimeout(context.Background(), QueryMasterTimeout*time.Second)
-					launchedTasks, err := taurus.MesosTasks(ctx, tw.master, job.Id, nil)
-					log.Printf("Job %s has %s launched tasks", job.Id, len(launchedTasks))
+					ctx, cancel := context.WithTimeout(context.Background(), MasterTimeout)
+					launchedTasks, err := taurus.MesosTasks(ctx, bw.master, job.Id, nil)
+					log.Printf("Job %s has %d launched tasks", job.Id, len(launchedTasks))
 					if err != nil {
 						log.Printf("Failed to retrieve Tasks for Job %s: %s", job.Id, err)
 						cancel()
@@ -255,7 +295,7 @@ func (tw *BasicTaskWorker) ReconcilePendingJobs() error {
 					}
 					if uint32(len(launchedTasks)) == jobTaskCount {
 						job.State = newState
-						if err := tw.store.UpdateJob(job); err != nil {
+						if err := bw.store.UpdateJob(job); err != nil {
 							reconErr = fmt.Errorf("Failed to update job %s: %s", job.Id, err)
 							break reconciler
 						}
@@ -271,30 +311,33 @@ func (tw *BasicTaskWorker) ReconcilePendingJobs() error {
 	return <-errChan
 }
 
-// KillJobTasks monitors all jobs marked as stopped and kills all of its running Tasks
-func (tw *BasicTaskWorker) KillJobTasks(driver scheduler.SchedulerDriver) error {
+// KillJobTasks monitors all Jobs marked as STOPPED and kills all of their running Tasks
+//
+// KillJobTasks runs in a separate goroutine started in Worker.Start call
+// It returns error if it can't read Job Store or the goroutine it is running in has been stopped
+func (bw *BasicWorker) KillJobTasks(driver scheduler.SchedulerDriver) error {
 	state := taurus.STOPPED
 	errChan := make(chan error)
-	ticker := time.NewTicker(StoreScanTick * time.Second)
+	ticker := time.NewTicker(StoreScanTick)
 	go func() {
 		var killErr error
 	killer:
 		for {
 			select {
-			case <-tw.done:
+			case <-bw.done:
 				ticker.Stop()
 				killErr = nil
 				log.Printf("Finishing %s Task queuer", state)
 				break killer
 			case <-ticker.C:
-				jobs, err := tw.store.GetJobs(state)
+				jobs, err := bw.store.GetJobs(state)
 				if err != nil {
 					killErr = fmt.Errorf("Error reading %s Jobs: %s", state, err)
 					break killer
 				}
 				for _, job := range jobs {
-					ctx, cancel := context.WithTimeout(context.Background(), QueryMasterTimeout*time.Second)
-					mesosTasks, err := taurus.MesosTasks(ctx, tw.master, job.Id, mesos.TaskState_TASK_RUNNING.Enum())
+					ctx, cancel := context.WithTimeout(context.Background(), MasterTimeout)
+					mesosTasks, err := taurus.MesosTasks(ctx, bw.master, job.Id, mesos.TaskState_TASK_RUNNING.Enum())
 					if err != nil {
 						log.Printf("Failed to read tasks for Job %s: %s", job.Id, err)
 						cancel()
@@ -313,60 +356,6 @@ func (tw *BasicTaskWorker) KillJobTasks(driver scheduler.SchedulerDriver) error 
 		}
 		errChan <- killErr
 		log.Printf("%s tasks killer ticker stopped", state)
-	}()
-
-	return <-errChan
-}
-
-// ReconcileStoppedJobs monitors killed Taurus Tasks for each RUNNING Job
-// If all required Tasks have been killed, the Taurus Job is marked as STOPPED
-func (tw *BasicTaskWorker) ReconcileSoppedJobs() error {
-	oldState := taurus.RUNNING
-	newState := taurus.STOPPED
-	errChan := make(chan error)
-	ticker := time.NewTicker(ReconcileScanTick * time.Second)
-	go func() {
-		var reconErr error
-	reconciler:
-		for {
-			select {
-			case <-tw.done:
-				log.Printf("Finished %s Reconciler", oldState)
-				ticker.Stop()
-				reconErr = nil
-				break reconciler
-			case <-ticker.C:
-				jobs, err := tw.store.GetJobs(oldState)
-				if err != nil {
-					reconErr = fmt.Errorf("Error reading %s Jobs: %s", oldState, err)
-					break reconciler
-				}
-				for _, job := range jobs {
-					ctx, cancel := context.WithTimeout(context.Background(), QueryMasterTimeout*time.Second)
-					killedTasks, err := taurus.MesosTasks(ctx, tw.master, job.Id, mesos.TaskState_TASK_KILLED.Enum())
-					log.Printf("Job %s has %s killed tasks", job.Id, len(killedTasks))
-					if err != nil {
-						log.Printf("Failed to retrieve Tasks for Job %s: %s", job.Id, err)
-						cancel()
-						continue
-					}
-					jobTaskCount := uint32(0)
-					for _, jobTask := range job.Tasks {
-						jobTaskCount += jobTask.Replicas
-					}
-					if uint32(len(killedTasks)) == jobTaskCount {
-						job.State = newState
-						if err := tw.store.UpdateJob(job); err != nil {
-							reconErr = fmt.Errorf("Failed to update job %s: %s", job.Id, err)
-							break reconciler
-						}
-						log.Printf("Job %s marked as %s", job.Id, newState)
-					}
-				}
-			}
-		}
-		errChan <- reconErr
-		log.Printf("%s Task Reconciler tick stopped", oldState)
 	}()
 
 	return <-errChan

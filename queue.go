@@ -2,10 +2,6 @@ package taurus
 
 import "time"
 
-const (
-	PendingQ = "pending"
-)
-
 // Subscription is a TaskQueue topic subscription
 type Subscription interface {
 	// ReadTask waits for some time to read Task from TaskQueue
@@ -21,7 +17,7 @@ type Subscription interface {
 	Closed(error) bool
 }
 
-// TaskQueue is a generic Task queu
+// TaskQueue is a generic queue for taurus.Tasks
 type TaskQueue interface {
 	// Publish publishes data to a TaskQueue
 	Publish(string, interface{}) error

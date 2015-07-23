@@ -5,14 +5,12 @@ import mesos "github.com/mesos/mesos-go/mesosproto"
 type State int
 
 const (
-	// Taurus Job state
+	// Job/Task state
 	PENDING State = iota + 1
 	RUNNING
 	STOPPED
 	UNKNOWN
 	// Default Task resource allocations
-	// These values are used if Job submission
-	// does not contain any Task resource requirements
 	DEFAULT_CPUS_PER_TASK = 1
 	DEFAULT_MEM_PER_TASK  = 128
 )
@@ -59,7 +57,7 @@ type HealthCheck struct {
 	Failures uint32  `json:"failures"`
 }
 
-// JobTask defines Taurus Job Task template
+// JobTask is a Taurus Task template
 type JobTask struct {
 	Cluster     string       `json:"cluster"`
 	Role        string       `json:"role"`
@@ -72,7 +70,6 @@ type JobTask struct {
 }
 
 // Job is a Taurus Framework Job
-// It can schedule multiple replicas of the same JobTask
 type Job struct {
 	Id    string     `json:"id"`
 	Tasks []*JobTask `json:"tasks"`

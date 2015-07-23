@@ -68,7 +68,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	tw, err := worker.NewBasicTaskWorker(ts, tq)
+	tw, err := worker.NewBasicWorker(ts, tq)
 	if err != nil {
 		log.Fatal(err)
 	}

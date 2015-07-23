@@ -2,7 +2,6 @@ package taurus
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"sync"
@@ -43,15 +42,15 @@ func getAllJobs(c *Context, w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("Error: %s", err)
 		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-		w.WriteHeader(http.StatusNotFound)
+		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(jobs); err != nil {
 		panic(err)
 	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func getJob(c *Context, w http.ResponseWriter, r *http.Request) {
@@ -78,11 +77,11 @@ func getJob(c *Context, w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
-	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(job); err != nil {
 		log.Printf("Error: %s", err)
 		panic(err)
 	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func startJob(c *Context, w http.ResponseWriter, r *http.Request) {
@@ -158,5 +157,24 @@ func delJob(c *Context, w http.ResponseWriter, r *http.Request) {
 }
 
 func delAllJobs(c *Context, w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Delete all jobs")
+	jobs, err := c.store.GetAllJobs()
+	if err != nil {
+		log.Printf("Error: %s", err)
+		w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	for _, job := range jobs {
+		job.State = STOPPED
+		log.Printf("Killing Job %s", job.Id)
+		if err := c.store.UpdateJob(job); err != nil {
+			log.Printf("Could not update job %s: %s", job.Id, err)
+			w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=UTF-8")
+	w.WriteHeader(http.StatusOK)
 }

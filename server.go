@@ -13,21 +13,24 @@ import (
 	"github.com/gorilla/mux"
 )
 
+// Api provides Taurus framework HTTP API
 type Api struct {
 	httpserver *http.Server
 	listener   net.Listener
 }
 
+// ApiConfig allows to define Taurus API configuration
 type ApiConfig struct {
-	Address   string
+	// API server bind address
+	Address string
+	// TLS configuration
 	TlsConfig *tls.Config
-	Store     Store
-	Master    string
+	// Taurus framework Job store
+	Store Store
 }
 
 type Context struct {
-	store  Store
-	master string
+	store Store
 }
 
 func newRouter(c *Context) *mux.Router {
@@ -78,14 +81,22 @@ func newListener(proto, addr string, tlsConfig *tls.Config) (net.Listener, error
 	return l, err
 }
 
+// ListenAndServe start API server
+//
+// ListenAndServe blocks until http server returns error
+// Due to its blocking behaviour this function should be run in its own goroutines
 func (a *Api) ListenAndServe() error {
 	return a.httpserver.Serve(a.listener)
 }
 
+// Creates and configures API server with provided configuration
+//
+// NewApi crates and initializes Api server with provided configuration
+// It returns error if either configuration is invalid or if API server could not
+// be created
 func NewApi(c *ApiConfig) (*Api, error) {
 	ctx := &Context{
-		store:  c.Store,
-		master: c.Master,
+		store: c.Store,
 	}
 	api := newRouter(ctx)
 	server := &http.Server{

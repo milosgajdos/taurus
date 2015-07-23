@@ -8,25 +8,16 @@ import (
 	sched "github.com/mesos/mesos-go/scheduler"
 )
 
-const (
-	QueueTimeout = 1
-	QueueRetry   = 5
-)
-
 type Scheduler struct {
-	Store   Store
-	Queue   TaskQueue
-	Worker  JobWorker
+	Worker  Worker
 	master  string
 	errChan chan error
 }
 
-func NewScheduler(store Store, queue TaskQueue, worker JobWorker, master string) (*Scheduler, error) {
+func NewScheduler(worker Worker, master string) (*Scheduler, error) {
 	errChan := make(chan error)
 
 	return &Scheduler{
-		Store:   store,
-		Queue:   queue,
 		Worker:  worker,
 		master:  master,
 		errChan: errChan,
@@ -38,7 +29,6 @@ func (sched *Scheduler) Run(driver *sched.MesosSchedulerDriver) (err error) {
 }
 
 func (sched *Scheduler) Stop() {
-	sched.Queue.Close()
 	sched.Worker.Stop()
 	return
 }
@@ -72,20 +62,11 @@ func (sched *Scheduler) Disconnected(sched.SchedulerDriver) {
 }
 
 func (sched *Scheduler) ResourceOffers(driver sched.SchedulerDriver, offers []*mesos.Offer) {
-	sched.Worker.Schedule(driver, offers)
+	sched.Worker.ScheduleTasks(driver, offers)
 }
 
 func (sched *Scheduler) StatusUpdate(driver sched.SchedulerDriver, status *mesos.TaskStatus) {
-	taskId := status.TaskId.GetValue()
-	taskStatus := status.GetState()
-	log.Println("Task", taskId, "is in state", taskStatus.String())
-
-	switch taskStatus {
-	case mesos.TaskState_TASK_RUNNING:
-		log.Printf("Marking task %s as %s", taskId, RUNNING)
-	case mesos.TaskState_TASK_KILLED, mesos.TaskState_TASK_FINISHED, mesos.TaskState_TASK_FAILED, mesos.TaskState_TASK_LOST:
-		log.Printf("Marking task %s as %s", taskId, STOPPED)
-	}
+	sched.Worker.StatusUpdate(driver, status)
 }
 
 func (sched *Scheduler) OfferRescinded(sched.SchedulerDriver, *mesos.OfferID) {}

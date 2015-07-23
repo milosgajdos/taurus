@@ -11,6 +11,7 @@ import (
 )
 
 // BasicStore provides a basic implementation of taurus.Store interface
+//
 // BasicStore is a flat file DB store that leverages gkvlite.Store as its low level storage
 // BasicStore is thread safe
 type BasicStore struct {
