@@ -13,7 +13,6 @@ import (
 
 var bq *BasicQueue
 
-// GNATS Server test options
 var TestOptions = server.Options{
 	Host:   "localhost",
 	Port:   4222,
@@ -22,7 +21,7 @@ var TestOptions = server.Options{
 }
 
 func Test_PublishSubscribe(t *testing.T) {
-	testSubject := "test"
+	testSubject := "test_pub_sub"
 	sub, err := bq.Subscribe(testSubject)
 	if err != nil {
 		t.Fatal("Failed to create test subscription")
@@ -53,6 +52,74 @@ func Test_PublishSubscribe(t *testing.T) {
 		}
 	} else {
 		t.Fatalf("Failed to receive the test task")
+	}
+}
+
+func Test_AutoUnsubscribe(t *testing.T) {
+	testSubject := "test_auto_unsub"
+	testTask := &taurus.Task{
+		JobId: "test-job",
+		State: taurus.PENDING,
+	}
+
+	max := 10
+	received := 0
+	total := 15
+	sub, err := bq.Subscribe(testSubject)
+	if err != nil {
+		t.Fatal("Failed to create test subscription")
+	}
+
+	for i := 0; i < total; i++ {
+		if err := bq.Publish(testSubject, testTask); err != nil {
+			t.Fatalf("AutoUnsubscribe test publish message failed: %s", err)
+		}
+	}
+
+	sub.AutoUnsubscribe(max)
+	for {
+		_, err := sub.ReadTask(1 * time.Millisecond)
+		if err != nil {
+			break
+		}
+		received += 1
+	}
+	if received != max {
+		t.Fatalf("Received %d msgs, wanted only %d\n", received, max)
+	}
+}
+
+func Test_Unsubscribe(t *testing.T) {
+	testSubject := "test_auto_unsub"
+	testTask := &taurus.Task{
+		JobId: "test-job",
+		State: taurus.PENDING,
+	}
+
+	sub, err := bq.Subscribe(testSubject)
+	if err != nil {
+		t.Fatal("Failed to create test subscription")
+	}
+
+	if err := bq.Publish(testSubject, testTask); err != nil {
+		t.Fatalf("Unsubscribe test publish message failed: %s", err)
+	}
+
+	sub.Unsubscribe()
+	if _, err := sub.ReadTask(1 * time.Millisecond); err == nil {
+		t.Fatalf("ReadTask should have returned error")
+	}
+}
+
+func Test_TimedOut(t *testing.T) {
+	testSubject := "test_auto_unsub"
+	sub, err := bq.Subscribe(testSubject)
+	if err != nil {
+		t.Fatal("Failed to create test subscription")
+	}
+
+	if _, err := sub.ReadTask(1 * time.Millisecond); !sub.TimedOut(err) {
+		t.Fatalf("ReadTask should have failed with Time Out error")
 	}
 }
 
