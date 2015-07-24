@@ -1,6 +1,5 @@
 FRAMEWORK=taurus
 CLIENT=tcli
-EXECUTOR=executor
 BUILD=go build
 CLEAN=go clean
 INSTALL=go install
@@ -11,10 +10,8 @@ framework: build
 		$(BUILD) -v -o $(BUILDPATH)/$(FRAMEWORK) $(SRCPATH)/framework
 client: build
 		$(BUILD) -v -o $(BUILDPATH)/$(CLIENT) $(SRCPATH)/cli
-executor: build
-		$(BUILD) -v -o $(BUILDPATH)/$(EXECUTOR) $(SRCPATH)/executor
 
-all: build framework client executor
+all: build framework client
 
 install:
 		$(INSTALL) $(SRCPATH)/...
