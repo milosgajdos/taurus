@@ -13,7 +13,7 @@ const (
 	DefaultEncoder = nats.JSON_ENCODER
 )
 
-var DefaultOptions = &nats.DefaultOptions
+var DefaultOptions = nats.DefaultOptions
 
 // BasicQueue provides a basic implementation of taurus.TaskQueue interface
 // BasicQueue uses nats.io distributed queue for data transport
@@ -27,9 +27,6 @@ type BasicQueue struct {
 // If no options are provided, BasicQueue will be initialized with DefaultOptions
 // It returns error if the queue fails to be initialized.
 func NewBasicQueue(options *nats.Options, encType string) (*BasicQueue, error) {
-	if options == nil {
-		options = DefaultOptions
-	}
 	conn, err := options.Connect()
 	if err != nil {
 		return nil, err
@@ -45,10 +42,10 @@ func NewBasicQueue(options *nats.Options, encType string) (*BasicQueue, error) {
 	}, nil
 }
 
-// Publish publishes data to a given queue for a given subject topic
+// Publish enqueues a taurus Task to BasicQueue
 // It returns an error if publishing the data to queue failed.
-func (bq *BasicQueue) Publish(subject string, data interface{}) error {
-	return bq.enconn.Publish(subject, data)
+func (bq *BasicQueue) Publish(subject string, task *taurus.Task) error {
+	return bq.enconn.Publish(subject, task)
 }
 
 // Subscribe creates a Synchronous subscription to given subject.

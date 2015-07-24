@@ -63,7 +63,7 @@ func main() {
 		queueServers = append(queueServers, queue.DefaultURL)
 	}
 	options.Servers = queueServers
-	tq, err := queue.NewBasicQueue(options, queue.DefaultEncoder)
+	tq, err := queue.NewBasicQueue(&options, queue.DefaultEncoder)
 	if err != nil {
 		log.Fatal(err)
 	}

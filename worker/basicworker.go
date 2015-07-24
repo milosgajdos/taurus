@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	PendingQ = "pending"
+	Pending = "pending"
 )
 
 const (
@@ -44,7 +44,7 @@ type BasicWorker struct {
 //
 // It returns error if the BasicWorker could not be initialized. This can be due to issues with TaskQueue or Store
 func NewBasicWorker(store taurus.Store, queue taurus.TaskQueue) (*BasicWorker, error) {
-	pending, err := queue.Subscribe(PendingQ)
+	pending, err := queue.Subscribe(Pending)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +201,7 @@ func (bw *BasicWorker) Stop() {
 // It returns error if it can't read Job Store or if the goroutine it's running in has been stopped.
 func (bw *BasicWorker) QueuePendingTasks() error {
 	state := taurus.PENDING
-	queue := PendingQ
+	queue := Pending
 	errChan := make(chan error)
 	ticker := time.NewTicker(StoreScanTick)
 	go func() {
