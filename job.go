@@ -28,6 +28,9 @@ func (s State) String() string {
 	}
 }
 
+// Policy will define Scheduling policy
+type Policy struct{}
+
 // Volume defines container volume-host mapping
 type Volume struct {
 	ContainerPath string `json:"container_path"`
@@ -71,9 +74,10 @@ type JobTask struct {
 
 // Job is a Taurus Framework Job
 type Job struct {
-	Id    string     `json:"id"`
-	Tasks []*JobTask `json:"tasks"`
-	State State      `json:"job_state"`
+	Id     string     `json:"id"`
+	Tasks  []*JobTask `json:"tasks"`
+	State  State      `json:"job_state"`
+	Policy *Policy    `json:"policy,omitempty"`
 }
 
 // Task is an instance of JobTask

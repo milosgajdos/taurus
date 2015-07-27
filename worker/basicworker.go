@@ -90,6 +90,16 @@ func (bw *BasicWorker) Start(driver scheduler.SchedulerDriver, masterInfo *mesos
 	return <-errChan
 }
 
+// Stop stops all BasicWorker goroutines and closes connection to Queue
+//
+// Stop waits for all worker goroutines to stop and then returns
+func (bw *BasicWorker) Stop() {
+	bw.queue.Close()
+	close(bw.done)
+	bw.wg.Wait()
+	return
+}
+
 // Schedule handles Mesos resource offers and based on the received offers launches PENDING Tasks
 //
 // It monitors PENDING Tasks Queue and tries to launch as many Tasks as possible for a single offer.
@@ -185,16 +195,6 @@ func (bw *BasicWorker) StatusUpdate(driver scheduler.SchedulerDriver, status *me
 	}
 }
 
-// Stop stops all BasicWorker goroutines
-//
-// Stop waits for all worker goroutines to cleanly stop and then returns
-func (bw *BasicWorker) Stop() {
-	bw.queue.Close()
-	close(bw.done)
-	bw.wg.Wait()
-	return
-}
-
 // QueuePendingTasks watches PENDING Job Store, generates appropriate Tasks and queues them into Pending Tasks queue
 //
 // QueuePendingTasks runs in a separate goroutine started in Worker.Start call
@@ -217,7 +217,7 @@ func (bw *BasicWorker) QueuePendingTasks() error {
 			case <-ticker.C:
 				jobs, err := bw.store.GetJobs(state)
 				if err != nil {
-					qpErr = fmt.Errorf("Error reading new Jobs: %s", err)
+					qpErr = fmt.Errorf("Error reading %s Jobs: %s", state, err)
 					break queuer
 				}
 				for _, job := range jobs {
@@ -270,9 +270,9 @@ func (bw *BasicWorker) ReconcilePendingJobs() error {
 		for {
 			select {
 			case <-bw.done:
-				log.Printf("Finished %s Reconciler", oldState)
 				ticker.Stop()
 				reconErr = nil
+				log.Printf("Finishing %s Reconciler", oldState)
 				break reconciler
 			case <-ticker.C:
 				jobs, err := bw.store.GetJobs(oldState)

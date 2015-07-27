@@ -54,7 +54,7 @@ func NewFramework(config *Config) (*Taurus, error) {
 		Name: proto.String(FrameworkName),
 	}
 
-	sched, err := NewScheduler(config.Worker, config.Master)
+	sched, err := NewScheduler(config.Worker)
 	if err != nil {
 		return nil, fmt.Errorf("Unable to create %s Scheduler: %s", FrameworkName, err)
 	}
@@ -96,22 +96,11 @@ func (t *Taurus) Run() error {
 	var wg sync.WaitGroup
 
 	// Create error channel
-	errChan := make(chan error, 3)
+	errChan := make(chan error, 2)
 
 	// Signal handler to stop API, Scanner and Killer goroutines
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, os.Interrupt, os.Kill, syscall.SIGTERM)
-
-	// start mesos driver
-	wg.Add(1)
-	go func() {
-		log.Printf("Starting %s scheduler driver", FrameworkName)
-		defer wg.Done()
-		if status, err := t.driver.Run(); err != nil {
-			errChan <- fmt.Errorf("Driver failed to start with status %s: %s",
-				status.String(), err)
-		}
-	}()
 
 	// Start Scheduler
 	wg.Add(1)
@@ -131,20 +120,15 @@ func (t *Taurus) Run() error {
 
 	select {
 	case sig := <-sigc:
-		log.Printf("Taurus shutting down. Got signal: %s", sig)
+		log.Printf("%s shutting down. Got signal: %s", FrameworkName, sig)
 	case err = <-errChan:
-		log.Printf("Taurus failed with error: %s", err)
+		log.Printf("%s Framework failed with error: %s", FrameworkName, err)
 	}
 
 	log.Printf("Stopping %s API server", FrameworkName)
 	t.api.listener.Close()
 	log.Printf("Stopping %s Scheduler", FrameworkName)
 	t.scheduler.Stop()
-	log.Printf("Stopping %s Scheduler driver", FrameworkName)
-	if _, err := t.driver.Stop(false); err != nil {
-		log.Printf("Stopping %s scheduler driver failed: %s", FrameworkName, err)
-		os.Exit(1)
-	}
 	wg.Wait()
 
 	return err
