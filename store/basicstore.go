@@ -15,6 +15,7 @@ import (
 // BasicStore is a flat file DB store that leverages gkvlite.Store as its low level storage
 // BasicStore is thread safe
 type BasicStore struct {
+	file  os.File
 	store *gkvlite.Store
 	mu    sync.RWMutex
 }
@@ -29,20 +30,21 @@ func NewBasicStore(fileName string) (*BasicStore, error) {
 		return nil, err
 	}
 
-	s, err := gkvlite.NewStore(file)
+	store, err := gkvlite.NewStore(file)
 	if err != nil {
 		return nil, err
 	}
 
-	if s.GetCollection("jobs") == nil {
-		s.SetCollection("jobs", nil)
-		if err := s.Flush(); err != nil {
+	if store.GetCollection("jobs") == nil {
+		store.SetCollection("jobs", nil)
+		if err := store.Flush(); err != nil {
 			return nil, err
 		}
 	}
 
 	return &BasicStore{
-		store: s,
+		file:  file,
+		store: store,
 	}, nil
 }
 
@@ -264,4 +266,33 @@ func (bs *BasicStore) GetAllJobs() ([]*taurus.Job, error) {
 	}
 
 	return jobs, nil
+}
+
+// Open opens a connection to Taurus framework BasicStore
+func (bs *BasicStore) Open() error {
+	fi, err := bs.file.Stat()
+	if err != nil {
+		return fmt.Errorf("Could not stat() store: %s", err)
+	}
+
+	file, err := os.OpenFile(fi.Name(), os.O_RDWR, 0600)
+	if err != nil {
+		return fmt.Errorf("Error opening file: %s", err)
+	}
+	bs.file = file
+
+	store, err := gkvlite.NewStore(file)
+	if err != nil {
+		return nil, err
+	}
+	bs.store = store
+}
+
+// Close closes the underlying raw storage
+func (bs *BasicStore) Close() {
+	// Close the underlying file storage
+	bs.store.file.Close()
+	// Close the gkvlite Store
+	bs.store.Flush()
+	bs.store.Close()
 }

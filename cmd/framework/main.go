@@ -59,11 +59,13 @@ func main() {
 	}
 
 	options := queue.DefaultOptions
+	queueURL := queue.DefaultURL
 	if len(queueServers) == 1 && queueServers[0] == "" {
-		queueServers = append(queueServers, queue.DefaultURL)
+		queueServers = append(queueServers, queueURL)
 	}
 	options.Servers = queueServers
-	tq, err := queue.NewBasicQueue(&options, queue.DefaultEncoder)
+	encoder = queue.DefaultEncoder
+	tq, err := queue.NewBasicQueue(&options, encoder)
 	if err != nil {
 		log.Fatal(err)
 	}

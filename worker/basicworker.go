@@ -42,19 +42,13 @@ type BasicWorker struct {
 
 // NewBasicWorker initializes BasicWorker
 //
-// It returns error if the BasicWorker could not be initialized. This can be due to issues with TaskQueue or Store
+// It returns error if the BasicWorker could not be initialized.
 func NewBasicWorker(store taurus.Store, queue taurus.TaskQueue) (*BasicWorker, error) {
-	pending, err := queue.Subscribe(Pending)
-	if err != nil {
-		return nil, err
-	}
-
 	done := make(chan struct{})
 	return &BasicWorker{
-		store:   store,
-		queue:   queue,
-		pending: pending,
-		done:    done,
+		store: store,
+		queue: queue,
+		done:  done,
 	}, nil
 }
 
@@ -62,7 +56,18 @@ func NewBasicWorker(store taurus.Store, queue taurus.TaskQueue) (*BasicWorker, e
 //
 // Start blocks waiting to receive an error if any of the Worker goroutines fails with error
 func (bw *BasicWorker) Start(driver scheduler.SchedulerDriver, masterInfo *mesos.MasterInfo) error {
+	if err := queue.Connect(); err != nil {
+		return err
+	}
+
+	pending, err := queue.Subscribe(Pending)
+	if err != nil {
+		return err
+	}
+	bw.pending = pending
 	bw.master = taurus.MasterConnStr(masterInfo)
+
+	// Worker error channel
 	errChan := make(chan error, 3)
 
 	// Start worker goroutines
@@ -95,6 +100,7 @@ func (bw *BasicWorker) Start(driver scheduler.SchedulerDriver, masterInfo *mesos
 // Stop waits for all worker goroutines to stop and then returns
 func (bw *BasicWorker) Stop() {
 	bw.queue.Close()
+	bw.store.Close()
 	close(bw.done)
 	bw.wg.Wait()
 	return

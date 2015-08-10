@@ -24,6 +24,8 @@ type Store interface {
 	GetJobs(State) ([]*Job, error)
 	// GetAllJobs retrieves all Jobs from the store
 	GetAllJobs() ([]*Job, error)
+	// Close closes open store and its underlying file descriptors
+	Close()
 }
 
 // ErrorCode defines Store operation error code
@@ -48,14 +50,14 @@ func (ec ErrorCode) String() string {
 	}
 }
 
-// StoreError encapsulates store ErrorCode and adds an actual error statement
-// StoreError implements builtin.error interface
+// StoreError encapsulates ErrorCode and adds a simple error description
+// StoreError implements builtin error interface
 type StoreError struct {
 	Code ErrorCode
 	Err  error
 }
 
-// Error method implementation to satisfy builtin.error interface
+// Error interface implementation to satisfy builtin error interface
 func (se *StoreError) Error() string {
 	s := se.Code.String()
 	if se.Err != nil {

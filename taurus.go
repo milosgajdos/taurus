@@ -88,9 +88,9 @@ func NewFramework(config *Config) (*Taurus, error) {
 
 // Run starts Taurus framework
 //
-// Run launches Mesos scheduler driver, Mesos task scheduler and framework's API server in separate goroutines
-// Run blocks until either of the started goroutines fails with error or if the framework has been manually stopped by sending it either of SIGTERM, SIGKILL or SIGINT OS signals
-// Run waits for all launched goroutines to finish cleanly and returns error back to the caller
+// Run launches Mesos Mesos task scheduler and framework's API server in separate goroutines
+// Run blocks until either of the launched goroutines fails with error or if the framework has been manually stopped by sending it either of SIGTERM, SIGKILL or SIGINT OS signals
+// Run waits for all goroutines to finish cleanly and returns error back to the caller
 func (t *Taurus) Run() error {
 	var err error
 	var wg sync.WaitGroup
@@ -98,7 +98,7 @@ func (t *Taurus) Run() error {
 	// Create error channel
 	errChan := make(chan error, 2)
 
-	// Signal handler to stop API, Scanner and Killer goroutines
+	// Signal handler to stop the framework scheduler and API
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, os.Interrupt, os.Kill, syscall.SIGTERM)
 

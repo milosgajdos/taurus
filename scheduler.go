@@ -119,6 +119,10 @@ func (sched *Scheduler) OfferRescinded(driver sched.SchedulerDriver, offerId *me
 	log.Printf("Offer %s no longer valid", offerId.GetValue())
 }
 
+func (sched *Scheduler) Error(driver sched.SchedulerDriver, err string) {
+	sched.errChan <- fmt.Errorf("cheduler received error: %s", err)
+}
+
 func (sched *Scheduler) FrameworkMessage(sched.SchedulerDriver, *mesos.ExecutorID, *mesos.SlaveID, string) {
 }
 
@@ -128,8 +132,4 @@ func (sched *Scheduler) SlaveLost(sched.SchedulerDriver, *mesos.SlaveID) {
 
 func (sched *Scheduler) ExecutorLost(sched.SchedulerDriver, *mesos.ExecutorID, *mesos.SlaveID, int) {
 	// TODO: reconcile tasks when Docker daemon stops/crashes
-}
-
-func (sched *Scheduler) Error(driver sched.SchedulerDriver, err string) {
-	sched.errChan <- fmt.Errorf("cheduler received error: %s", err)
 }

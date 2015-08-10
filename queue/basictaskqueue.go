@@ -2,6 +2,7 @@ package queue
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/milosgajdos83/taurus"
@@ -18,28 +19,47 @@ var DefaultOptions = nats.DefaultOptions
 // BasicQueue provides a basic implementation of taurus.TaskQueue interface
 // BasicQueue uses nats.io distributed queue for data transport
 type BasicQueue struct {
-	enconn *nats.EncodedConn
+	enconn  *nats.EncodedConn
+	Options *nats.Options
+	encoder string
 }
 
-// NewBasicQueue initializes BasicQueue
+// NewBasicQueue initializes BasicQueue client
 //
-// NewBasicQueue accepts nats.Options and encoding type which must be supported by nats.io queue
+// NewBasicQueue accepts nats.Options and encoder type.
 // If no options are provided, BasicQueue will be initialized with DefaultOptions
 // It returns error if the queue fails to be initialized.
-func NewBasicQueue(options *nats.Options, encType string) (*BasicQueue, error) {
-	conn, err := options.Connect()
-	if err != nil {
-		return nil, err
+func NewBasicQueue(options *nats.Options, encoder string) (*BasicQueue, error) {
+	if options == nil {
+		options := &DefaultOptions
 	}
 
-	enconn, err := nats.NewEncodedConn(conn, encType)
-	if err != nil {
-		return nil, err
+	if encoder != nats.JSON_ENCODER || nats.GOB_ENCODER {
+		return nil, fmt.Errorf("Unsupported encoder type: %s", encoder)
 	}
 
 	return &BasicQueue{
-		enconn: enconn,
+		encoder: encoder,
+		Options: options,
 	}, nil
+}
+
+// Connect establishes encoded connection with Queue
+// Connect returns error if either the connection could not be established or
+// requested Encoder scheme is not supported
+func (bq *BasicQueue) Connect() error {
+	conn, err := bq.Options.Connect()
+	if err != nil {
+		return err
+	}
+
+	enconn, err := nats.NewEncodedConn(conn, bq.encoder)
+	if err != nil {
+		return err
+	}
+	bq.enconn = enconn
+
+	return nil
 }
 
 // Publish enqueues a taurus Task to BasicQueue

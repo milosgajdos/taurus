@@ -19,9 +19,11 @@ type Subscription interface {
 
 // TaskQueue is a generic queue for taurus.Tasks
 type TaskQueue interface {
-	// Publish publishes data to a TaskQueue
+	// Connect establishes a connection with TaskQueue
+	Connect()
+	// Publish publishes a Task to TaskQueue
 	Publish(string, *Task) error
-	// Subscribe subscribes to a given topic and returns Subscription
+	// Subscribe subscribes to a topic and returns Subscription
 	Subscribe(string) (Subscription, error)
 	// Close closes the TaskQeue
 	Close()
