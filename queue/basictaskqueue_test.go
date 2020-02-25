@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/milosgajdos83/taurus"
+	"github.com/milosgajdos/taurus"
 	"github.com/nats-io/gnatsd/server"
 	"github.com/nats-io/gnatsd/test"
 )

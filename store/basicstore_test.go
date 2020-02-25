@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/milosgajdos83/taurus"
+	"github.com/milosgajdos/taurus"
 )
 
 var bs *BasicStore

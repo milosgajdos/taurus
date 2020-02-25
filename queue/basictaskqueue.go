@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/milosgajdos83/taurus"
+	"github.com/milosgajdos/taurus"
 	"github.com/nats-io/nats"
 )
 

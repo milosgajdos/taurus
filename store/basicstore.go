@@ -6,7 +6,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/milosgajdos83/taurus"
+	"github.com/milosgajdos/taurus"
 	"github.com/steveyen/gkvlite"
 )
 

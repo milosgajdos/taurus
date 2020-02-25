@@ -12,7 +12,7 @@ import (
 	mesos "github.com/mesos/mesos-go/mesosproto"
 	"github.com/mesos/mesos-go/mesosutil"
 	"github.com/mesos/mesos-go/scheduler"
-	"github.com/milosgajdos83/taurus"
+	"github.com/milosgajdos/taurus"
 )
 
 const (

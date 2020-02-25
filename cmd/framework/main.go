@@ -6,10 +6,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/milosgajdos83/taurus"
-	"github.com/milosgajdos83/taurus/queue"
-	"github.com/milosgajdos83/taurus/store"
-	"github.com/milosgajdos83/taurus/worker"
+	"github.com/milosgajdos/taurus"
+	"github.com/milosgajdos/taurus/queue"
+	"github.com/milosgajdos/taurus/store"
+	"github.com/milosgajdos/taurus/worker"
 )
 
 var (
